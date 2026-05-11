@@ -8,21 +8,27 @@ const router = Router();
 router.get('/google', (req: Request, res: Response) => {
   const state = uuidv4();
   req.session.oauthState = state;
-  res.redirect(getAuthUrl(state));
+  // Persist before redirecting to Google so the state survives the callback.
+  req.session.save((err) => {
+    if (err) console.error('[auth] Session save error:', err);
+    res.redirect(getAuthUrl(state));
+  });
 });
 
-// GET /auth/google/callback — handle OAuth callback
-router.get('/google/callback', async (req: Request, res: Response) => {
+// Shared OAuth callback handler — used at both /auth/google/callback
+// and /accounts/google/login/callback/ (the path Google actually redirects to
+// per GOOGLE_REDIRECT_URI in .env).
+export async function handleGoogleCallback(req: Request, res: Response) {
   const { code, state, error } = req.query as Record<string, string>;
 
   if (error) {
     console.error('[auth] OAuth error:', error);
-    res.redirect('/?auth_error=' + encodeURIComponent(error));
+    res.redirect('/signin?auth_error=' + encodeURIComponent(error));
     return;
   }
 
   if (state !== req.session.oauthState) {
-    res.redirect('/?auth_error=invalid_state');
+    res.redirect('/signin?auth_error=invalid_state');
     return;
   }
 
@@ -30,13 +36,22 @@ router.get('/google/callback', async (req: Request, res: Response) => {
     const user = await exchangeCode(code);
     req.session.userId = user.id;
     delete req.session.oauthState;
-    console.log(`[auth] User signed in: ${user.email}`);
-    res.redirect('/');
+    // Force-persist the session BEFORE redirecting. Without this, the response
+    // can race ahead of the async session store write — the browser then lands
+    // on `/` and `/auth/me` returns 401 because the session row isn't there yet.
+    req.session.save((err) => {
+      if (err) console.error('[auth] Session save error:', err);
+      console.log(`[auth] User signed in: ${user.email}`);
+      res.redirect('/');
+    });
   } catch (err) {
     console.error('[auth] Exchange error:', err);
-    res.redirect('/?auth_error=exchange_failed');
+    res.redirect('/signin?auth_error=exchange_failed');
   }
-});
+}
+
+// GET /auth/google/callback — handle OAuth callback
+router.get('/google/callback', handleGoogleCallback);
 
 // GET /auth/me — return current user info
 router.get('/me', async (req: Request, res: Response) => {

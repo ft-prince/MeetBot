@@ -9,7 +9,7 @@ import { config } from './config';
 import { db, dbReady } from './db/client';
 import { handleConnection } from './ws/ingestHandler';
 import apiRouter from './routes/api';
-import authRouter from './routes/auth';
+import authRouter, { handleGoogleCallback } from './routes/auth';
 import calendarRouter from './routes/calendar';
 import { startScheduler } from './services/schedulerService';
 // session type augmentation — loaded via tsconfig includes
@@ -50,11 +50,21 @@ async function main() {
 
   // ── Routes ────────────────────────────────────────────────────────
   app.use('/auth', authRouter);
+  // GOOGLE_REDIRECT_URI points to /accounts/google/login/callback/ — register
+  // that path explicitly so the OAuth code exchange works rather than falling
+  // through to the SPA catch-all.
+  app.get('/accounts/google/login/callback', handleGoogleCallback);
+  app.get('/accounts/google/login/callback/', handleGoogleCallback);
   app.use('/api', apiRouter);
   app.use('/api/calendar', calendarRouter);
 
-  // Serve the web UI
-  const frontendDir = path.resolve('/Users/ftprince/renataIot/noteAI/backend/frontend');
+  // Serve the React UI build (frontend/dist). Falls back to the legacy vanilla
+  // frontend if the React build hasn't been produced yet.
+  const reactBuild = path.resolve('/Users/ftprince/renataIot/noteAI/frontend/dist');
+  const legacyBuild = path.resolve('/Users/ftprince/renataIot/noteAI/backend/frontend-vanilla');
+  const fs = await import('fs');
+  const frontendDir = fs.existsSync(path.join(reactBuild, 'index.html')) ? reactBuild : legacyBuild;
+  console.log(`[startup] Serving frontend from ${frontendDir}`);
   app.use(express.static(frontendDir));
   app.get('*', (_req, res) => res.sendFile(path.join(frontendDir, 'index.html')));
 
