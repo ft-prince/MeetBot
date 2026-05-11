@@ -387,7 +387,7 @@ async function generateSummaryInBackground(meetingId: string, meetingCode: strin
       console.log(`[summary] No segments found for ${meetingCode}, skipping`);
       return;
     }
-    const { summary, keyInsights } = await generateSummary(
+    const { summary, keyInsights, detailedRewrite, importantPoints } = await generateSummary(
       segments.map((s: Record<string, unknown>) => ({
         speakerName: s.speaker_name as string | null,
         speakerLabel: s.speaker_label as string,
@@ -397,7 +397,7 @@ async function generateSummaryInBackground(meetingId: string, meetingCode: strin
       meetingCode
     );
     if (summary) {
-      await saveSummary(meetingId, summary, keyInsights);
+      await saveSummary(meetingId, summary, keyInsights, detailedRewrite, importantPoints);
       console.log(`[summary] Saved for ${meetingCode}`);
     }
   } catch (err) {

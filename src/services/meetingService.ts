@@ -32,31 +32,43 @@ export async function endMeeting(meetingId: string): Promise<void> {
 export async function saveSummary(
   meetingId: string,
   summary: string,
-  keyInsights: string[]
+  keyInsights: string[],
+  detailedRewrite = '',
+  importantPoints: string[] = []
 ): Promise<void> {
   await db.query(
-    `UPDATE meetings SET summary = $1, key_insights = $2 WHERE id = $3`,
-    [summary, JSON.stringify(keyInsights), meetingId]
+    `UPDATE meetings
+     SET summary = $1, key_insights = $2,
+         metadata = metadata || $3::jsonb
+     WHERE id = $4`,
+    [
+      summary,
+      JSON.stringify(keyInsights),
+      JSON.stringify({ detailedRewrite, importantPoints }),
+      meetingId,
+    ]
   );
   console.log(`[meeting] Summary saved for ${meetingId}`);
 }
 
 export async function getMeetingSummary(meetingId: string, userId?: string) {
   const result = await db.query(
-    `SELECT id, meeting_code, title, summary, key_insights, started_at, ended_at, duration_ms, user_id
+    `SELECT id, meeting_code, title, summary, key_insights, started_at, ended_at, duration_ms, user_id, metadata
      FROM meetings WHERE id = $1`,
     [meetingId]
   );
   if (!result.rows[0]) return null;
   const row = result.rows[0];
-  // Deny access if the meeting belongs to a different user
   if (userId && row.user_id && row.user_id !== userId) return null;
+  const meta = row.metadata || {};
   return {
     id: row.id,
     meetingCode: row.meeting_code,
     title: row.title,
     summary: row.summary,
     keyInsights: row.key_insights || [],
+    detailedRewrite: (meta.detailedRewrite as string) || '',
+    importantPoints: (meta.importantPoints as string[]) || [],
     startedAt: row.started_at,
     endedAt: row.ended_at,
     durationMs: row.duration_ms,
