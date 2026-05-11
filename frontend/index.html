@@ -1,194 +1,274 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NoteAI — Meeting Transcription</title>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>NoteAI — Meeting Intelligence</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0f1117; color: #e2e8f0; min-height: 100vh;
-      display: flex; flex-direction: column;
+    :root {
+      --bg:#F4F6F9; --surface:#FFFFFF; --border:#E5E7EB;
+      --accent:#F06428; --accent-h:#D94E1C; --accent-light:#FEF3EE;
+      --text:#111827; --muted:#6B7280;
+      --success:#059669; --warning:#D97706; --danger:#DC2626;
     }
-    header {
-      padding: 14px 28px; background: #1a1d2e;
-      border-bottom: 1px solid #2d3148;
-      display: flex; align-items: center; gap: 12px; flex-shrink: 0;
-    }
-    .logo { font-size: 20px; font-weight: 800; color: #818cf8; letter-spacing: -.5px }
-    .tagline { font-size: 13px; color: #475569 }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex}
 
-    .join-bar {
-      padding: 16px 28px; background: #13151f;
-      border-bottom: 1px solid #1e2235;
-      display: flex; gap: 10px; flex-shrink: 0;
-    }
-    .join-bar input {
-      flex: 1; max-width: 560px;
-      padding: 10px 14px; background: #1a1d2e;
-      border: 1px solid #2d3148; border-radius: 7px;
-      color: #e2e8f0; font-size: 14px; outline: none;
-      transition: border-color .15s;
-    }
-    .join-bar input:focus { border-color: #6366f1 }
-    .join-bar input::placeholder { color: #475569 }
-    .btn-join {
-      padding: 10px 20px; background: #6366f1; color: #fff;
-      border: none; border-radius: 7px; font-size: 13px; font-weight: 600;
-      cursor: pointer; white-space: nowrap; transition: background .15s;
-    }
-    .btn-join:hover { background: #4f46e5 }
-    .btn-join:disabled { background: #334155; cursor: not-allowed }
+    /* ── Sidebar ── */
+    .sidebar{width:240px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;height:100vh;z-index:200}
+    .sidebar-logo{padding:1.25rem 1.25rem 1rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+    .logo-icon{width:32px;height:32px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;font-weight:800;flex-shrink:0}
+    .logo-text{font-size:1.2rem;font-weight:800;letter-spacing:-.5px}
+    .logo-text span{color:var(--accent)}
+    .sidebar-nav{flex:1;padding:.75rem .75rem;display:flex;flex-direction:column;gap:2px}
+    .nav-section{font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;padding:.5rem .5rem .25rem}
+    .nav-link{display:flex;align-items:center;gap:9px;padding:.52rem .75rem;border-radius:8px;font-size:.875rem;font-weight:500;color:var(--muted);cursor:pointer;transition:all .15s;border:none;background:none;width:100%;text-align:left;text-decoration:none}
+    .nav-link:hover{background:var(--bg);color:var(--text)}
+    .nav-link.active{background:var(--accent-light);color:var(--accent);font-weight:600}
+    .nav-link svg{flex-shrink:0;opacity:.7}
+    .nav-link.active svg{opacity:1}
+    .nav-badge{margin-left:auto;background:var(--accent);color:#fff;font-size:.65rem;font-weight:700;padding:1px 6px;border-radius:99px}
+    .sidebar-footer{padding:.75rem 1rem;border-top:1px solid var(--border)}
+    .user-row{display:flex;align-items:center;gap:9px}
+    .user-avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#F59E0B);display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;overflow:hidden;flex-shrink:0}
+    .user-avatar img{width:100%;height:100%;object-fit:cover}
+    .user-info{flex:1;min-width:0}
+    .user-name{font-size:.8rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .user-email{font-size:.7rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .btn-logout{padding:4px 8px;background:none;border:1px solid var(--border);border-radius:6px;font-size:.7rem;color:var(--muted);cursor:pointer;flex-shrink:0}
+    .btn-logout:hover{border-color:var(--danger);color:var(--danger)}
+    .connect-btn{display:flex;align-items:center;gap:8px;padding:.6rem .75rem;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:.8rem;font-weight:600;cursor:pointer;width:100%;justify-content:center;text-decoration:none}
+    .connect-btn:hover{background:var(--accent-h)}
+
+    /* ── Main ── */
+    .main{margin-left:240px;flex:1;display:flex;flex-direction:column;min-height:100vh}
+    .topbar{padding:.875rem 2rem;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+    .topbar-title{font-size:1.1rem;font-weight:700;color:var(--text);flex:1}
+    .topbar-sub{font-size:.8rem;color:var(--muted)}
+    .content{padding:1.75rem 2rem;flex:1}
+    .page{display:none}
+    .page.active{display:block}
+
+    /* ── Buttons ── */
+    .btn{display:inline-flex;align-items:center;gap:.4rem;padding:.5rem 1rem;border-radius:8px;font-size:.875rem;font-weight:500;border:none;cursor:pointer;transition:all .15s;text-decoration:none}
+    .btn-primary{background:var(--accent);color:#fff} .btn-primary:hover{background:var(--accent-h)}
+    .btn-secondary{background:var(--surface);color:var(--text);border:1px solid var(--border)} .btn-secondary:hover{background:var(--bg)}
+    .btn-danger{background:var(--danger);color:#fff} .btn-danger:hover{background:#B91C1C}
+    .btn-success{background:var(--success);color:#fff} .btn-success:hover{background:#047857}
+    .btn-sm{padding:.35rem .7rem;font-size:.8rem}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+
+    /* ── Cards ── */
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.25rem;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+    .card-title{font-size:.925rem;font-weight:600;color:var(--text);margin-bottom:1rem;display:flex;align-items:center;gap:8px}
+
+    /* ── Join bar ── */
+    .join-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.25rem;box-shadow:0 1px 3px rgba(0,0,0,.04);margin-bottom:1.5rem}
+    .join-row{display:flex;gap:10px}
+    .join-input{flex:1;max-width:560px;padding:.6rem .9rem;border:1.5px solid var(--border);border-radius:8px;font-size:.875rem;color:var(--text);outline:none;transition:border-color .15s,box-shadow .15s;background:var(--surface)}
+    .join-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(240,100,40,.1)}
+    .join-input::placeholder{color:var(--muted)}
 
     /* ── Meetings grid ── */
-    #meetings {
-      flex: 1; display: flex; flex-wrap: wrap;
-      align-content: flex-start; gap: 16px;
-      padding: 20px 28px; overflow-y: auto;
-    }
+    .meetings-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:1.25rem}
+    .empty-state{text-align:center;padding:4rem 1rem;color:var(--muted)}
+    .empty-state .icon{font-size:2.5rem;margin-bottom:.75rem}
+    .empty-state p{font-size:.9rem}
 
-    .empty-home {
-      flex: 1; display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      color: #334155; gap: 10px; padding: 80px 0; width: 100%;
-    }
-    .empty-home .icon { font-size: 40px }
-    .empty-home p { font-size: 15px }
+    /* ── Meeting card ── */
+    .meeting-card{background:var(--surface);border:1.5px solid var(--border);border-radius:10px;display:flex;flex-direction:column;max-height:580px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+    .mc-header{padding:.75rem 1rem;background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+    .mc-code{font-size:.8rem;font-weight:700;color:var(--accent);flex:1;font-family:monospace}
+    .dot{width:8px;height:8px;border-radius:50%;background:#D1D5DB;flex-shrink:0}
+    .dot.active{background:#10B981;box-shadow:0 0 6px #10B981;animation:pulse 1.5s infinite}
+    .dot.loading{background:var(--warning);animation:pulse 1s infinite}
+    .dot.error{background:var(--danger)}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+    .mc-status{font-size:.72rem;color:var(--muted)}
+    .mc-live{padding:.5rem 1rem;background:#FFFAF8;border-bottom:1px solid #FDE8D8;display:flex;align-items:center;gap:8px;font-size:.8rem;min-height:34px;flex-shrink:0}
+    .live-speaker{font-weight:700;color:var(--accent)}
+    .live-text{color:var(--muted);font-style:italic;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .mc-transcript{flex:1;overflow-y:auto;padding:.75rem 1rem;display:flex;flex-direction:column;gap:8px}
+    .mc-empty{color:#D1D5DB;font-size:.8rem;text-align:center;padding:2rem 0}
+    .segment{background:var(--bg);border-left:3px solid var(--border);border-radius:0 6px 6px 0;padding:6px 10px}
+    .seg-meta{display:flex;align-items:center;gap:6px;margin-bottom:3px}
+    .avatar{width:20px;height:20px;border-radius:50%;font-size:8px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .seg-name{font-weight:600;font-size:.75rem}
+    .seg-time{font-size:.7rem;color:var(--muted);margin-left:auto}
+    .seg-text{color:#374151;font-size:.8rem;line-height:1.5}
+    .mc-toolbar{padding:.6rem 1rem;background:var(--bg);border-top:1px solid var(--border);display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}
+    .mc-summary{padding:.75rem 1rem;background:#FFFAF8;border-top:1px solid #FDE8D8;display:none;max-height:180px;overflow-y:auto}
+    .mc-summary.visible{display:block}
+    .sum-title{font-size:.75rem;font-weight:700;color:var(--accent);margin-bottom:6px}
+    .sum-text{font-size:.8rem;color:var(--text);line-height:1.6;margin-bottom:8px}
+    .sum-insights{list-style:none;display:flex;flex-direction:column;gap:4px}
+    .sum-insights li{font-size:.75rem;color:var(--muted);padding-left:14px;position:relative;line-height:1.5}
+    .sum-insights li::before{content:'→';position:absolute;left:0;color:var(--accent)}
 
-    /* ── Per-meeting card ── */
-    .meeting-card {
-      background: #1a1d2e; border: 1px solid #2d3148;
-      border-radius: 12px; display: flex; flex-direction: column;
-      width: calc(50% - 8px); min-width: 380px;
-      max-height: 600px; overflow: hidden;
-    }
-    @media (max-width: 900px) { .meeting-card { width: 100% } }
+    /* ── Pills ── */
+    .pill{display:inline-block;padding:.2rem .6rem;border-radius:99px;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+    .pill-live{background:rgba(220,38,38,.1);color:var(--danger)}
+    .pill-done{background:rgba(5,150,105,.1);color:var(--success)}
+    .pill-pending{background:rgba(217,119,6,.1);color:var(--warning)}
 
-    .card-header {
-      padding: 12px 16px; background: #13151f;
-      border-bottom: 1px solid #1e2235;
-      display: flex; align-items: center; gap: 10px;
-    }
-    .card-id { font-size: 12px; font-weight: 700; color: #818cf8; flex: 1 }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #334155; flex-shrink: 0 }
-    .dot.active  { background: #22c55e; box-shadow: 0 0 6px #22c55e; animation: pulse 1.5s infinite }
-    .dot.loading { background: #f59e0b; animation: pulse 1s infinite }
-    .dot.error   { background: #ef4444 }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-    .card-status { font-size: 12px; color: #64748b }
+    /* ── Calendar ── */
+    .cal-event{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem 1.25rem;display:flex;align-items:center;gap:1rem;box-shadow:0 1px 3px rgba(0,0,0,.04);transition:box-shadow .15s}
+    .cal-event:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
+    .cal-time-block{flex-shrink:0;text-align:center;background:var(--accent-light);border-radius:8px;padding:.5rem .6rem;min-width:56px}
+    .cal-date{font-size:.65rem;font-weight:600;color:var(--accent);text-transform:uppercase}
+    .cal-time{font-size:1rem;font-weight:700;color:var(--accent)}
+    .cal-info{flex:1;min-width:0}
+    .cal-title{font-size:.9rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cal-attendees{font-size:.75rem;color:var(--muted);margin-top:2px}
+    .cal-actions{display:flex;align-items:center;gap:.75rem;flex-shrink:0}
+    .autojoin-wrap{display:flex;align-items:center;gap:6px;font-size:.75rem;color:var(--muted)}
+    .toggle{width:34px;height:19px;background:#D1D5DB;border-radius:99px;position:relative;cursor:pointer;border:none;transition:background .2s;flex-shrink:0}
+    .toggle.on{background:var(--accent)}
+    .toggle::after{content:'';position:absolute;width:13px;height:13px;background:#fff;border-radius:50%;top:3px;left:3px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+    .toggle.on::after{left:18px}
 
-    .card-live {
-      padding: 8px 16px; background: #151824;
-      border-bottom: 1px solid #1e2235;
-      display: flex; align-items: center; gap: 8px;
-      font-size: 12px; min-height: 36px; flex-shrink: 0;
-    }
-    .live-speaker { font-weight: 700 }
-    .live-text { color: #94a3b8; font-style: italic; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+    /* ── Past meetings table ── */
+    .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+    table{width:100%;border-collapse:collapse}
+    th{text-align:left;padding:.6rem 1rem;color:var(--muted);font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid var(--border);background:var(--bg)}
+    td{padding:.75rem 1rem;border-bottom:1px solid var(--border);font-size:.85rem}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:#FAFAFA}
+    .summary-preview{font-size:.75rem;color:var(--muted);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 
-    .card-transcript {
-      flex: 1; overflow-y: auto; padding: 12px 16px;
-      display: flex; flex-direction: column; gap: 10px;
-    }
-    .card-empty { color: #334155; font-size: 13px; text-align: center; padding: 30px 0 }
+    /* ── Alerts ── */
+    .alert{padding:.75rem 1rem;border-radius:8px;font-size:.875rem;margin-bottom:1rem}
+    .alert-info{background:var(--accent-light);border:1px solid rgba(240,100,40,.2);color:#92400E}
 
-    .segment {
-      background: #13151f; border-left: 3px solid #334155;
-      border-radius: 0 6px 6px 0; padding: 8px 12px;
-    }
-    .seg-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 4px }
-    .avatar {
-      width: 22px; height: 22px; border-radius: 50%;
-      font-size: 9px; font-weight: 700;
-      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-    }
-    .seg-name  { font-weight: 600; font-size: 12px }
-    .seg-time  { font-size: 11px; color: #475569; margin-left: auto }
-    .seg-text  { color: #cbd5e1; font-size: 13px; line-height: 1.5 }
+    /* ── Page header ── */
+    .page-header{display:flex;align-items:center;gap:12px;margin-bottom:1.5rem}
+    .page-header h1{font-size:1.35rem;font-weight:700;flex:1}
 
-    .card-toolbar {
-      padding: 8px 16px; background: #13151f;
-      border-top: 1px solid #1e2235;
-      display: flex; gap: 6px; flex-shrink: 0;
-    }
-    .btn-sm {
-      padding: 6px 12px; border-radius: 5px; border: none;
-      cursor: pointer; font-size: 11px; font-weight: 600;
-    }
-    .btn-red    { background: #7f1d1d; color: #fca5a5 }
-    .btn-red:hover    { background: #991b1b }
-    .btn-gray   { background: #1e293b; color: #94a3b8 }
-    .btn-gray:hover   { background: #273449 }
-    .btn-orange { background: #78350f; color: #fcd34d }
-    .btn-orange:hover { background: #92400e }
+    /* ── Swap modal ── */
+    .modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:500;align-items:center;justify-content:center}
+    .modal-bg.open{display:flex}
+    .modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.5rem;min-width:340px;max-width:480px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.12)}
+    .modal h3{font-size:1rem;font-weight:700;margin-bottom:1rem}
+    .modal-row{display:flex;align-items:center;gap:10px;margin-bottom:.75rem}
+    .modal-row label{font-size:.8rem;color:var(--muted);width:80px}
+    .modal-row select{flex:1;padding:.5rem .75rem;border:1px solid var(--border);border-radius:8px;font-size:.875rem;background:var(--surface);color:var(--text);outline:none}
+    .modal-row select:focus{border-color:var(--accent)}
+    .modal-btns{display:flex;gap:8px;margin-top:1.25rem;justify-content:flex-end}
 
-    /* Swap modal */
-    .modal-bg {
-      display: none; position: fixed; inset: 0;
-      background: rgba(0,0,0,.6); z-index: 100;
-      align-items: center; justify-content: center;
-    }
-    .modal-bg.open { display: flex }
-    .modal {
-      background: #1a1d2e; border: 1px solid #2d3148; border-radius: 12px;
-      padding: 24px; min-width: 320px; max-width: 480px; width: 90%;
-    }
-    .modal h3 { font-size: 15px; color: #e2e8f0; margin-bottom: 16px }
-    .modal-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px }
-    .modal-row label { font-size: 12px; color: #94a3b8; width: 80px }
-    .modal-row select {
-      flex: 1; padding: 7px 10px; background: #13151f;
-      border: 1px solid #2d3148; border-radius: 6px;
-      color: #e2e8f0; font-size: 13px;
-    }
-    .modal-btns { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end }
-    .modal-btns button { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600 }
-    .modal-btns .apply { background: #6366f1; color: #fff }
-    .modal-btns .cancel { background: #1e293b; color: #94a3b8 }
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 
-    ::-webkit-scrollbar { width: 4px }
-    ::-webkit-scrollbar-thumb { background: #2d3148; border-radius: 3px }
+    /* ── Responsive ── */
+    @media(max-width:900px){
+      .sidebar{transform:translateX(-100%);transition:transform .25s}
+      .sidebar.open{transform:none}
+      .main{margin-left:0}
+      .meetings-grid{grid-template-columns:1fr}
+    }
   </style>
 </head>
 <body>
-<header>
-  <span class="logo">⬡ NoteAI</span>
-  <span class="tagline">AI Meeting Transcription</span>
-</header>
 
-<div class="join-bar">
-  <input id="meetUrl" type="url"
-    placeholder="Paste Google Meet link — https://meet.google.com/abc-defg-hij"
-    autocomplete="off" />
-  <button class="btn-join" id="btnJoin" onclick="joinMeeting()">+ Start Recording</button>
-</div>
+<!-- ── Sidebar ── -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-icon">⬡</div>
+    <div class="logo-text"><span>Note</span>AI</div>
+  </div>
 
-<div id="meetings">
-  <div class="empty-home" id="emptyHome">
-    <span class="icon">🎙</span>
-    <p>Paste a meeting link above to start recording</p>
+  <nav class="sidebar-nav">
+    <div class="nav-section">Meetings</div>
+    <button class="nav-link active" onclick="showPage('live',this)">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+      Live Recording
+      <span class="nav-badge" id="liveBadge" style="display:none">0</span>
+    </button>
+    <button class="nav-link" onclick="showPage('calendar',this)">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      Calendar
+    </button>
+    <button class="nav-link" onclick="showPage('past',this)">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+      Past Meetings
+    </button>
+  </nav>
+
+  <div class="sidebar-footer" id="sidebarFooter">
+    <a href="/auth/google" class="connect-btn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+      Connect Google
+    </a>
+  </div>
+</aside>
+
+<!-- ── Main ── -->
+<div class="main">
+  <div class="topbar">
+    <span class="topbar-title" id="topbarTitle">Live Recording</span>
+    <span class="topbar-sub" id="topbarSub">Real-time transcription with speaker identification</span>
+  </div>
+
+  <div class="content">
+
+    <!-- Live Page -->
+    <div class="page active" id="page-live">
+      <div class="join-card">
+        <div class="card-title">
+          <svg width="16" height="16" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          Start Recording
+        </div>
+        <div class="join-row">
+          <input class="join-input" id="meetUrl" type="url"
+            placeholder="Paste Google Meet link — https://meet.google.com/abc-defg-hij" autocomplete="off"/>
+          <button class="btn btn-primary" id="btnJoin" onclick="joinMeeting()">+ Start Recording</button>
+        </div>
+      </div>
+      <div class="meetings-grid" id="meetings">
+        <div class="empty-state" id="emptyHome" style="grid-column:1/-1">
+          <div class="icon">🎙</div>
+          <p>No active recordings. Paste a Meet link above to start.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Calendar Page -->
+    <div class="page" id="page-calendar">
+      <div class="page-header">
+        <h1>Upcoming Meetings</h1>
+        <span class="topbar-sub">Next 25 days from Google Calendar</span>
+        <button class="btn btn-primary btn-sm" id="btnSync" onclick="syncCalendar()">🔄 Sync Calendar</button>
+      </div>
+      <div id="calContent">
+        <div class="alert alert-info">
+          <strong>Connect your Google account</strong> to sync upcoming meetings and enable auto-join.
+        </div>
+      </div>
+    </div>
+
+    <!-- Past Meetings Page -->
+    <div class="page" id="page-past">
+      <div class="page-header"><h1>Past Meetings</h1></div>
+      <div id="pastContent">
+        <div class="empty-state"><div class="icon">📂</div><p>No past meetings yet.</p></div>
+      </div>
+    </div>
+
   </div>
 </div>
 
-<!-- Swap speakers modal -->
+<!-- ── Swap Modal ── -->
 <div class="modal-bg" id="swapModal">
   <div class="modal">
     <h3>🔄 Swap Speakers</h3>
-    <div class="modal-row">
-      <label>Speaker A</label>
-      <select id="swapA"></select>
-    </div>
-    <div class="modal-row">
-      <label>Speaker B</label>
-      <select id="swapB"></select>
-    </div>
+    <div class="modal-row"><label>Speaker A</label><select id="swapA"></select></div>
+    <div class="modal-row"><label>Speaker B</label><select id="swapB"></select></div>
     <div class="modal-btns">
-      <button class="cancel" onclick="closeSwap()">Cancel</button>
-      <button class="apply" onclick="applySwap()">Swap</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeSwap()">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="applySwap()">Swap</button>
     </div>
   </div>
 </div>
+
 <script src="app.js"></script>
 </body>
 </html>

@@ -7,9 +7,12 @@ import {
   createMeeting,
   endMeeting,
   saveSegment,
+  saveSummary,
   updateSpeakerName,
   logDomEvent,
+  getMeetingTranscript,
 } from '../services/meetingService';
+import { generateSummary } from '../services/summaryService';
 
 // One session per connected WebSocket (one per active meeting)
 interface Session {
@@ -233,10 +236,10 @@ export function broadcastToMeeting(
 }
 
 // Create a session for a bot-initiated meeting (no WebSocket audio source)
-export async function createBotSession(meetingCode: string): Promise<void> {
+export async function createBotSession(meetingCode: string, userId?: string): Promise<void> {
   if (sessions.has(meetingCode)) return;
 
-  const meeting = await createMeeting(meetingCode);
+  const meeting = await createMeeting(meetingCode, userId);
   const correlator = new SpeakerCorrelator();
   const panelClients = new Set<WebSocket>();
 
@@ -340,27 +343,54 @@ export function setTrackName(meetingCode: string, trackId: string, name: string)
   });
 }
 
-// Called by botManager.stop() — tears down all whispers, closes DB record, notifies panel
+// Called by botManager.stop() — tears down whispers, generates summary, notifies panel
 export async function endBotSession(meetingCode: string): Promise<void> {
   const session = sessions.get(meetingCode);
   if (!session) return;
 
   // Disconnect all per-track whisper clients
   for (const [trackId, w] of session.trackWhispers) {
-    try { w.disconnect() } catch {}
+    try { w.disconnect(); } catch {}
     console.log(`[session] Disconnected whisper for track ${trackId.slice(0, 8)}`);
   }
   session.trackWhispers.clear();
-
-  // Disconnect the legacy merged whisper too
-  try { session.whisper.disconnect() } catch {}
-
+  try { session.whisper.disconnect(); } catch {}
   session.correlator.closeAllEvents(Date.now());
+
   await endMeeting(session.meetingId).catch(console.error);
 
-  // Tell panel clients the meeting is over
+  // Notify panel meeting ended
   broadcastToPanel(session.panelClients, { type: 'meeting.ended', meetingId: session.meetingId });
 
   sessions.delete(meetingCode);
   console.log(`[session] Bot session ended for ${meetingCode}`);
+
+  // Generate AI summary in background (non-blocking)
+  generateSummaryInBackground(session.meetingId, meetingCode);
+}
+
+async function generateSummaryInBackground(meetingId: string, meetingCode: string): Promise<void> {
+  try {
+    console.log(`[summary] Generating summary for ${meetingCode}...`);
+    const segments = await getMeetingTranscript(meetingId);
+    if (!segments || segments.length === 0) {
+      console.log(`[summary] No segments found for ${meetingCode}, skipping`);
+      return;
+    }
+    const { summary, keyInsights } = await generateSummary(
+      segments.map((s: Record<string, unknown>) => ({
+        speakerName: s.speaker_name as string | null,
+        speakerLabel: s.speaker_label as string,
+        text: s.text as string,
+        startMs: s.start_ms as number,
+      })),
+      meetingCode
+    );
+    if (summary) {
+      await saveSummary(meetingId, summary, keyInsights);
+      console.log(`[summary] Saved for ${meetingCode}`);
+    }
+  } catch (err) {
+    console.error(`[summary] Failed for ${meetingCode}:`, (err as Error).message);
+  }
 }
