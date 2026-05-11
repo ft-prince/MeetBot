@@ -343,12 +343,8 @@ export function setTrackName(meetingCode: string, trackId: string, name: string)
   });
 }
 
-// Called by botManager.stop() — tears down whispers, generates summary, notifies panel
-export async function endBotSession(meetingCode: string): Promise<void> {
-  const session = sessions.get(meetingCode);
-  if (!session) return;
-
-  // Disconnect all per-track whisper clients
+// Shared teardown logic — disconnects whispers, ends DB meeting, notifies panel, clears session.
+async function teardownSession(session: Session, meetingCode: string): Promise<void> {
   for (const [trackId, w] of session.trackWhispers) {
     try { w.disconnect(); } catch {}
     console.log(`[session] Disconnected whisper for track ${trackId.slice(0, 8)}`);
@@ -358,15 +354,29 @@ export async function endBotSession(meetingCode: string): Promise<void> {
   session.correlator.closeAllEvents(Date.now());
 
   await endMeeting(session.meetingId).catch(console.error);
-
-  // Notify panel meeting ended
   broadcastToPanel(session.panelClients, { type: 'meeting.ended', meetingId: session.meetingId });
-
   sessions.delete(meetingCode);
+}
+
+// Called by botManager.stop() — tears down and generates AI summary
+export async function endBotSession(meetingCode: string): Promise<void> {
+  const session = sessions.get(meetingCode);
+  if (!session) return;
+
+  await teardownSession(session, meetingCode);
   console.log(`[session] Bot session ended for ${meetingCode}`);
 
   // Generate AI summary in background (non-blocking)
   generateSummaryInBackground(session.meetingId, meetingCode);
+}
+
+// Called by botManager.exit() — tears down WITHOUT generating summary (force-exit)
+export async function endBotSessionNoSummary(meetingCode: string): Promise<void> {
+  const session = sessions.get(meetingCode);
+  if (!session) return;
+
+  await teardownSession(session, meetingCode);
+  console.log(`[session] Bot session force-exited for ${meetingCode} (no summary generated)`);
 }
 
 async function generateSummaryInBackground(meetingId: string, meetingCode: string): Promise<void> {

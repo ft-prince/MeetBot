@@ -4,15 +4,27 @@ import { getAuthUrl, exchangeCode, getUserById } from '../services/googleAuth';
 
 const router = Router();
 
+// ── OAuth state registry ──────────────────────────────────────────────────────
+// Storing state in the session fails when the browser initiates OAuth on
+// localhost but Google redirects to 127.0.0.1 (different host → session cookie
+// is not sent → req.session.oauthState is undefined → "invalid_state").
+// Using a server-side Map decouples state validation from cookie/session delivery.
+const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const pendingStates = new Map<string, number>(); // state → expiry timestamp
+
+// Prune expired states every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [state, expiry] of pendingStates) {
+    if (now > expiry) pendingStates.delete(state);
+  }
+}, 5 * 60 * 1000).unref();
+
 // GET /auth/google — redirect to Google consent screen
-router.get('/google', (req: Request, res: Response) => {
+router.get('/google', (_req: Request, res: Response) => {
   const state = uuidv4();
-  req.session.oauthState = state;
-  // Persist before redirecting to Google so the state survives the callback.
-  req.session.save((err) => {
-    if (err) console.error('[auth] Session save error:', err);
-    res.redirect(getAuthUrl(state));
-  });
+  pendingStates.set(state, Date.now() + STATE_TTL_MS);
+  res.redirect(getAuthUrl(state));
 });
 
 // Shared OAuth callback handler — used at both /auth/google/callback
@@ -27,18 +39,20 @@ export async function handleGoogleCallback(req: Request, res: Response) {
     return;
   }
 
-  if (state !== req.session.oauthState) {
+  // Validate state against the server-side registry (not the session cookie)
+  const expiry = pendingStates.get(state);
+  if (!expiry || Date.now() > expiry) {
+    console.warn('[auth] Invalid or expired OAuth state:', state?.slice(0, 8));
     res.redirect('/signin?auth_error=invalid_state');
     return;
   }
+  pendingStates.delete(state); // single-use
 
   try {
     const user = await exchangeCode(code);
     req.session.userId = user.id;
-    delete req.session.oauthState;
-    // Force-persist the session BEFORE redirecting. Without this, the response
-    // can race ahead of the async session store write — the browser then lands
-    // on `/` and `/auth/me` returns 401 because the session row isn't there yet.
+    // Force-persist the session BEFORE redirecting so /auth/me sees the userId
+    // immediately when the browser lands on /.
     req.session.save((err) => {
       if (err) console.error('[auth] Session save error:', err);
       console.log(`[auth] User signed in: ${user.email}`);

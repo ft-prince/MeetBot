@@ -3,6 +3,7 @@ import {
   broadcastToMeeting,
   createBotSession,
   endBotSession,
+  endBotSessionNoSummary,
   forwardEvent,
   forwardTrackAudio,
   setTrackName,
@@ -70,10 +71,18 @@ export const botManager = {
     return meetingId;
   },
 
+  // Graceful stop — leaves the meeting cleanly and generates AI summary.
   async stop(meetingId: string): Promise<void> {
     const bot = activeBots.get(meetingId);
     activeBots.delete(meetingId);
     await Promise.all([bot?.stop(), endBotSession(meetingId)]);
+  },
+
+  // Force-exit — kills the browser immediately, no summary generated.
+  async exit(meetingId: string): Promise<void> {
+    const bot = activeBots.get(meetingId);
+    activeBots.delete(meetingId);
+    await Promise.all([bot?.stop(), endBotSessionNoSummary(meetingId)]);
   },
 
   active(): string[] {

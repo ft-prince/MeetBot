@@ -32,10 +32,21 @@ router.post('/meetings/join', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/meetings/:id/stop
-router.post('/meetings/:id/stop', async (req: Request, res: Response) => {
-  await botManager.stop(req.params.id);
+// POST /api/meetings/:code/stop — graceful stop, generates summary
+router.post('/meetings/:code/stop', async (req: Request, res: Response) => {
+  await botManager.stop(req.params.code);
   res.json({ ok: true });
+});
+
+// POST /api/meetings/:code/exit — force-exit, no summary
+router.post('/meetings/:code/exit', async (req: Request, res: Response) => {
+  await botManager.exit(req.params.code);
+  res.json({ ok: true });
+});
+
+// GET /api/bots/active — list active bot meeting codes
+router.get('/bots/active', (_req: Request, res: Response) => {
+  res.json({ active: botManager.active() });
 });
 
 // GET /api/meetings
