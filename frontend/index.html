@@ -20,7 +20,7 @@
     .logo-icon{width:32px;height:32px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;font-weight:800;flex-shrink:0}
     .logo-text{font-size:1.2rem;font-weight:800;letter-spacing:-.5px}
     .logo-text span{color:var(--accent)}
-    .sidebar-nav{flex:1;padding:.75rem .75rem;display:flex;flex-direction:column;gap:2px}
+    .sidebar-nav{flex:1;padding:.75rem .75rem;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
     .nav-section{font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;padding:.5rem .5rem .25rem}
     .nav-link{display:flex;align-items:center;gap:9px;padding:.52rem .75rem;border-radius:8px;font-size:.875rem;font-weight:500;color:var(--muted);cursor:pointer;transition:all .15s;border:none;background:none;width:100%;text-align:left;text-decoration:none}
     .nav-link:hover{background:var(--bg);color:var(--text)}
@@ -69,7 +69,7 @@
     .join-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(240,100,40,.1)}
     .join-input::placeholder{color:var(--muted)}
 
-    /* ── Meetings grid ── */
+    /* ── Live meetings grid ── */
     .meetings-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:1.25rem}
     .empty-state{text-align:center;padding:4rem 1rem;color:var(--muted)}
     .empty-state .icon{font-size:2.5rem;margin-bottom:.75rem}
@@ -131,7 +131,7 @@
     .table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
     table{width:100%;border-collapse:collapse}
     th{text-align:left;padding:.6rem 1rem;color:var(--muted);font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid var(--border);background:var(--bg)}
-    td{padding:.75rem 1rem;border-bottom:1px solid var(--border);font-size:.85rem}
+    td{padding:.75rem 1rem;border-bottom:1px solid var(--border);font-size:.85rem;vertical-align:middle}
     tr:last-child td{border-bottom:none}
     tr:hover td{background:#FAFAFA}
     .summary-preview{font-size:.75rem;color:var(--muted);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -155,15 +155,104 @@
     .modal-row select:focus{border-color:var(--accent)}
     .modal-btns{display:flex;gap:8px;margin-top:1.25rem;justify-content:flex-end}
 
+    /* ── Dashboard ── */
+    .dash-welcome{margin-bottom:1.5rem}
+    .dash-welcome h1{font-size:1.5rem;font-weight:800;margin-bottom:.25rem}
+    .dash-welcome p{font-size:.875rem;color:var(--muted)}
+    .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem}
+    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem 1.25rem;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+    .stat-label{font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.25rem}
+    .stat-value{font-size:1.75rem;font-weight:800;color:var(--text);line-height:1.1}
+    .stat-sub{font-size:.7rem;color:var(--muted);margin-top:4px}
+    .dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+    .dash-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+    .dash-panel-hdr{padding:.875rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+    .dash-panel-title{font-size:.875rem;font-weight:700;color:var(--text);display:flex;align-items:center;gap:6px}
+    .dash-item{padding:.875rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:.875rem;cursor:pointer;transition:background .1s}
+    .dash-item:last-child{border-bottom:none}
+    .dash-item:hover{background:var(--bg)}
+    .dash-item-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0}
+    .dash-item-body{flex:1;min-width:0}
+    .dash-item-title{font-size:.875rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .dash-item-sub{font-size:.75rem;color:var(--muted);margin-top:2px}
+    .dash-item-end{flex-shrink:0;text-align:right}
+    .dash-empty{padding:2.5rem 1.25rem;text-align:center;color:var(--muted);font-size:.85rem}
+
+    /* ── Meeting Detail ── */
+    .detail-header{display:flex;align-items:center;gap:12px;margin-bottom:1.25rem;flex-wrap:wrap}
+    .detail-heading{flex:1}
+    .detail-code{font-family:monospace;font-size:1rem;font-weight:700;color:var(--accent)}
+    .detail-meta{font-size:.8rem;color:var(--muted);margin-top:2px}
+    .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:start}
+    .detail-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;max-height:calc(100vh - 210px)}
+    .detail-panel-hdr{padding:.875rem 1.25rem;border-bottom:1px solid var(--border);font-size:.875rem;font-weight:700;display:flex;align-items:center;gap:6px;flex-shrink:0;background:var(--bg)}
+    .detail-transcript-body{flex:1;overflow-y:auto;padding:.875rem 1rem;display:flex;flex-direction:column;gap:8px}
+    .detail-right{display:flex;flex-direction:column;gap:1rem;max-height:calc(100vh - 210px);overflow-y:auto}
+    .detail-section{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+    .detail-section-hdr{padding:.7rem 1.25rem;border-bottom:1px solid var(--border);font-size:.8rem;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px;background:var(--accent-light)}
+    .detail-section-body{padding:1rem 1.25rem}
+    .analytics-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+    .analytics-item{background:var(--bg);border-radius:8px;padding:.875rem;text-align:center}
+    .analytics-num{font-size:1.5rem;font-weight:800;color:var(--text)}
+    .analytics-label{font-size:.7rem;color:var(--muted);margin-top:3px}
+    .insight-item{display:flex;align-items:flex-start;gap:8px;padding:.6rem 0;border-bottom:1px solid var(--border);font-size:.85rem;color:var(--text);line-height:1.5}
+    .insight-item:last-child{border-bottom:none;padding-bottom:0}
+    .insight-bullet{color:var(--accent);font-weight:700;flex-shrink:0;margin-top:2px}
+    .rewrite-text{font-size:.875rem;color:var(--text);line-height:1.8}
+
+    /* ── All Meetings ── */
+    .filter-bar{display:flex;gap:.75rem;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap}
+    .search-input{flex:1;min-width:200px;max-width:380px;padding:.55rem .9rem;border:1.5px solid var(--border);border-radius:8px;font-size:.875rem;color:var(--text);outline:none;background:var(--surface);transition:border-color .15s}
+    .search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(240,100,40,.1)}
+    .filter-select{padding:.55rem .8rem;border:1px solid var(--border);border-radius:8px;font-size:.8rem;background:var(--surface);color:var(--text);outline:none;cursor:pointer}
+    .filter-select:focus{border-color:var(--accent)}
+    .meetings-count{margin-left:auto;font-size:.8rem;color:var(--muted);font-weight:500}
+    .clickable-row{cursor:pointer}
+    .clickable-row:hover td{background:#F9FAFB}
+
+    /* ── Profile ── */
+    .profile-grid{display:grid;grid-template-columns:320px 1fr;gap:1.5rem;align-items:start}
+    .profile-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.75rem;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+    .profile-avatar-lg{width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#F59E0B);display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.5rem;font-weight:700;margin-bottom:1.25rem;overflow:hidden}
+    .profile-avatar-lg img{width:100%;height:100%;object-fit:cover}
+    .profile-name{font-size:1.15rem;font-weight:700;color:var(--text);margin-bottom:.25rem}
+    .profile-email{font-size:.875rem;color:var(--muted);margin-bottom:1.5rem}
+    .profile-meta{display:flex;flex-direction:column}
+    .profile-meta-row{display:flex;justify-content:space-between;align-items:center;font-size:.85rem;padding:.7rem 0;border-bottom:1px solid var(--border)}
+    .profile-meta-row:last-child{border-bottom:none}
+    .profile-meta-label{color:var(--muted)}
+    .profile-meta-value{color:var(--text);font-weight:600}
+    .settings-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+    .settings-card-hdr{padding:.875rem 1.25rem;border-bottom:1px solid var(--border);font-size:.875rem;font-weight:700;background:var(--bg);display:flex;align-items:center;gap:8px}
+    .settings-body{padding:0 1.25rem}
+    .settings-row{display:flex;align-items:center;justify-content:space-between;padding:1rem 0;border-bottom:1px solid var(--border)}
+    .settings-row:last-child{border-bottom:none}
+    .settings-label{font-size:.875rem;font-weight:600;color:var(--text);margin-bottom:3px}
+    .settings-desc{font-size:.75rem;color:var(--muted);line-height:1.4}
+    .settings-control{flex-shrink:0;margin-left:1.5rem}
+    .range-wrap{display:flex;align-items:center;gap:.75rem}
+    .range-input{width:110px;accent-color:var(--accent);cursor:pointer}
+    .range-val{font-size:.875rem;font-weight:700;color:var(--accent);min-width:52px;text-align:right}
+    .settings-footer{padding:1.25rem;border-top:1px solid var(--border);background:var(--bg)}
+
     /* ── Scrollbar ── */
     ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 
     /* ── Responsive ── */
+    @media(max-width:1100px){
+      .dash-grid{grid-template-columns:1fr}
+      .stats-row{grid-template-columns:repeat(2,1fr)}
+      .detail-grid{grid-template-columns:1fr}
+      .detail-right{max-height:none}
+      .detail-panel{max-height:480px}
+      .profile-grid{grid-template-columns:1fr}
+    }
     @media(max-width:900px){
       .sidebar{transform:translateX(-100%);transition:transform .25s}
       .sidebar.open{transform:none}
       .main{margin-left:0}
       .meetings-grid{grid-template-columns:1fr}
+      .stats-row{grid-template-columns:repeat(2,1fr)}
     }
   </style>
 </head>
@@ -177,19 +266,31 @@
   </div>
 
   <nav class="sidebar-nav">
-    <div class="nav-section">Meetings</div>
-    <button class="nav-link active" onclick="showPage('live',this)">
+    <div class="nav-section">Workspace</div>
+    <button class="nav-link active" data-page="dashboard" onclick="showPage('dashboard',this)">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Dashboard
+    </button>
+    <button class="nav-link" data-page="live" onclick="showPage('live',this)">
       <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
       Live Recording
       <span class="nav-badge" id="liveBadge" style="display:none">0</span>
     </button>
-    <button class="nav-link" onclick="showPage('calendar',this)">
+    <button class="nav-link" data-page="calendar" onclick="showPage('calendar',this)">
       <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
       Calendar
     </button>
-    <button class="nav-link" onclick="showPage('past',this)">
-      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
-      Past Meetings
+
+    <div class="nav-section">Meetings</div>
+    <button class="nav-link" data-page="all-meetings" onclick="showPage('all-meetings',this)">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      All Meetings
+    </button>
+
+    <div class="nav-section">Account</div>
+    <button class="nav-link" data-page="profile" onclick="showPage('profile',this)">
+      <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      Profile
     </button>
   </nav>
 
@@ -204,14 +305,65 @@
 <!-- ── Main ── -->
 <div class="main">
   <div class="topbar">
-    <span class="topbar-title" id="topbarTitle">Live Recording</span>
-    <span class="topbar-sub" id="topbarSub">Real-time transcription with speaker identification</span>
+    <span class="topbar-title" id="topbarTitle">Dashboard</span>
+    <span class="topbar-sub" id="topbarSub">Overview of your meetings</span>
   </div>
 
   <div class="content">
 
-    <!-- Live Page -->
-    <div class="page active" id="page-live">
+    <!-- ── Dashboard ── -->
+    <div class="page active" id="page-dashboard">
+      <div class="dash-welcome">
+        <h1>Good <span id="dashGreeting">day</span>, <span id="dashUserName">there</span> 👋</h1>
+        <p>Here's what's happening with your meetings.</p>
+      </div>
+
+      <div class="join-card">
+        <div class="card-title">
+          <svg width="16" height="16" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          Quick Join
+        </div>
+        <div class="join-row">
+          <input class="join-input" id="dashMeetUrl" type="url"
+            placeholder="Paste Google Meet link — https://meet.google.com/abc-defg-hij" autocomplete="off"/>
+          <button class="btn btn-primary" onclick="joinFromDash()">+ Start Recording</button>
+        </div>
+      </div>
+
+      <div class="stats-row" id="dashStats">
+        <div class="stat-card"><div class="stat-label">Total Meetings</div><div class="stat-value">—</div></div>
+        <div class="stat-card"><div class="stat-label">Live Now</div><div class="stat-value">—</div></div>
+        <div class="stat-card"><div class="stat-label">AI Summaries</div><div class="stat-value">—</div></div>
+        <div class="stat-card"><div class="stat-label">Hours Recorded</div><div class="stat-value">—</div></div>
+      </div>
+
+      <div class="dash-grid">
+        <div class="dash-panel">
+          <div class="dash-panel-hdr">
+            <span class="dash-panel-title">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              Upcoming Meetings
+            </span>
+            <button class="btn btn-secondary btn-sm" onclick="syncCalendar()">🔄 Sync</button>
+          </div>
+          <div id="dashUpcoming"><div class="dash-empty">Loading…</div></div>
+        </div>
+
+        <div class="dash-panel">
+          <div class="dash-panel-hdr">
+            <span class="dash-panel-title">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              Recent Meetings
+            </span>
+            <button class="btn btn-secondary btn-sm" onclick="showPage('all-meetings', document.querySelector('[data-page=all-meetings]'))">View all →</button>
+          </div>
+          <div id="dashRecent"><div class="dash-empty">Loading…</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Live Recording ── -->
+    <div class="page" id="page-live">
       <div class="join-card">
         <div class="card-title">
           <svg width="16" height="16" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
@@ -231,7 +383,7 @@
       </div>
     </div>
 
-    <!-- Calendar Page -->
+    <!-- ── Calendar ── -->
     <div class="page" id="page-calendar">
       <div class="page-header">
         <h1>Upcoming Meetings</h1>
@@ -245,16 +397,112 @@
       </div>
     </div>
 
-    <!-- Past Meetings Page -->
-    <div class="page" id="page-past">
-      <div class="page-header"><h1>Past Meetings</h1></div>
-      <div id="pastContent">
-        <div class="empty-state"><div class="icon">📂</div><p>No past meetings yet.</p></div>
+    <!-- ── All Meetings ── -->
+    <div class="page" id="page-all-meetings">
+      <div class="page-header"><h1>All Meetings</h1></div>
+      <div class="filter-bar">
+        <input class="search-input" id="meetingSearch" type="search"
+          placeholder="Search by title or meeting code…" oninput="filterAndRenderMeetings()"/>
+        <select class="filter-select" id="statusFilter" onchange="filterAndRenderMeetings()">
+          <option value="">All Status</option>
+          <option value="done">Summarized</option>
+          <option value="processing">Processing</option>
+        </select>
+        <select class="filter-select" id="sortFilter" onchange="filterAndRenderMeetings()">
+          <option value="newest">Newest First</option>
+          <option value="oldest">Oldest First</option>
+          <option value="longest">Longest First</option>
+        </select>
+        <span class="meetings-count" id="meetingsCount"></span>
+      </div>
+      <div id="allMeetingsContent">
+        <div class="empty-state"><div class="icon">📂</div><p>Loading meetings…</p></div>
       </div>
     </div>
 
-  </div>
-</div>
+    <!-- ── Meeting Detail ── -->
+    <div class="page" id="page-meeting-detail">
+      <div class="detail-header">
+        <button class="btn btn-secondary btn-sm" onclick="goBack()">← Back</button>
+        <div class="detail-heading">
+          <div class="detail-code" id="detailCode">—</div>
+          <div class="detail-meta" id="detailMeta"></div>
+        </div>
+        <span class="pill" id="detailStatusPill"></span>
+      </div>
+      <div class="detail-grid">
+        <div class="detail-panel">
+          <div class="detail-panel-hdr">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+            Full Transcript
+          </div>
+          <div class="detail-transcript-body" id="detailTranscript">
+            <div style="color:var(--muted);font-size:.85rem;text-align:center;padding:2rem">Loading transcript…</div>
+          </div>
+        </div>
+
+        <div class="detail-right">
+          <div class="detail-section">
+            <div class="detail-section-hdr">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+              Analytics
+            </div>
+            <div class="detail-section-body">
+              <div class="analytics-grid" id="detailAnalytics">
+                <div class="analytics-item"><div class="analytics-num">—</div><div class="analytics-label">Segments</div></div>
+                <div class="analytics-item"><div class="analytics-num">—</div><div class="analytics-label">Speakers</div></div>
+                <div class="analytics-item"><div class="analytics-num">—</div><div class="analytics-label">Words</div></div>
+                <div class="analytics-item"><div class="analytics-num">—</div><div class="analytics-label">Words/Min</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-section">
+            <div class="detail-section-hdr">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 16v-4m0-4h.01"/></svg>
+              AI Summary
+            </div>
+            <div class="detail-section-body">
+              <div class="rewrite-text" id="detailSummary">Loading…</div>
+            </div>
+          </div>
+
+          <div class="detail-section" id="detailInsightsCard">
+            <div class="detail-section-hdr">
+              <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              Key Insights
+            </div>
+            <div class="detail-section-body" id="detailInsights"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Profile ── -->
+    <div class="page" id="page-profile">
+      <div class="page-header"><h1>Profile</h1></div>
+      <div class="profile-grid">
+        <div class="profile-card" id="profileCard">
+          <div style="color:var(--muted);font-size:.85rem">Loading…</div>
+        </div>
+
+        <div class="settings-card">
+          <div class="settings-card-hdr">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+            Auto-Bot Settings
+          </div>
+          <div class="settings-body" id="autoBotSettings">
+            <div style="padding:1.5rem;color:var(--muted);font-size:.85rem;text-align:center">Loading settings…</div>
+          </div>
+          <div class="settings-footer">
+            <button class="btn btn-primary" style="width:100%" id="btnSaveSettings" onclick="saveAutoBotSettings()">Save Settings</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /main -->
 
 <!-- ── Swap Modal ── -->
 <div class="modal-bg" id="swapModal">

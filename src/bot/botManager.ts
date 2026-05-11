@@ -57,6 +57,8 @@ export const botManager = {
       onError: (err) => {
         console.error('[botManager] Bot error:', err);
         activeBots.delete(meetingId);
+        broadcastToMeeting(meetingId, { type: 'bot.error', meetingId, error: err.message });
+        endBotSession(meetingId).catch(console.error);
       },
     }).catch((err: Error) => {
       if (!err.message?.includes('closed') && !err.message?.includes('Target')) {
