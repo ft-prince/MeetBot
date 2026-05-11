@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NoteAI — Meeting Transcription</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f1117; color: #e2e8f0; min-height: 100vh;
+      display: flex; flex-direction: column;
+    }
+    header {
+      padding: 14px 28px; background: #1a1d2e;
+      border-bottom: 1px solid #2d3148;
+      display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+    }
+    .logo { font-size: 20px; font-weight: 800; color: #818cf8; letter-spacing: -.5px }
+    .tagline { font-size: 13px; color: #475569 }
+
+    .join-bar {
+      padding: 16px 28px; background: #13151f;
+      border-bottom: 1px solid #1e2235;
+      display: flex; gap: 10px; flex-shrink: 0;
+    }
+    .join-bar input {
+      flex: 1; max-width: 560px;
+      padding: 10px 14px; background: #1a1d2e;
+      border: 1px solid #2d3148; border-radius: 7px;
+      color: #e2e8f0; font-size: 14px; outline: none;
+      transition: border-color .15s;
+    }
+    .join-bar input:focus { border-color: #6366f1 }
+    .join-bar input::placeholder { color: #475569 }
+    .btn-join {
+      padding: 10px 20px; background: #6366f1; color: #fff;
+      border: none; border-radius: 7px; font-size: 13px; font-weight: 600;
+      cursor: pointer; white-space: nowrap; transition: background .15s;
+    }
+    .btn-join:hover { background: #4f46e5 }
+    .btn-join:disabled { background: #334155; cursor: not-allowed }
+
+    /* ── Meetings grid ── */
+    #meetings {
+      flex: 1; display: flex; flex-wrap: wrap;
+      align-content: flex-start; gap: 16px;
+      padding: 20px 28px; overflow-y: auto;
+    }
+
+    .empty-home {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: #334155; gap: 10px; padding: 80px 0; width: 100%;
+    }
+    .empty-home .icon { font-size: 40px }
+    .empty-home p { font-size: 15px }
+
+    /* ── Per-meeting card ── */
+    .meeting-card {
+      background: #1a1d2e; border: 1px solid #2d3148;
+      border-radius: 12px; display: flex; flex-direction: column;
+      width: calc(50% - 8px); min-width: 380px;
+      max-height: 600px; overflow: hidden;
+    }
+    @media (max-width: 900px) { .meeting-card { width: 100% } }
+
+    .card-header {
+      padding: 12px 16px; background: #13151f;
+      border-bottom: 1px solid #1e2235;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .card-id { font-size: 12px; font-weight: 700; color: #818cf8; flex: 1 }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #334155; flex-shrink: 0 }
+    .dot.active  { background: #22c55e; box-shadow: 0 0 6px #22c55e; animation: pulse 1.5s infinite }
+    .dot.loading { background: #f59e0b; animation: pulse 1s infinite }
+    .dot.error   { background: #ef4444 }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .card-status { font-size: 12px; color: #64748b }
+
+    .card-live {
+      padding: 8px 16px; background: #151824;
+      border-bottom: 1px solid #1e2235;
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; min-height: 36px; flex-shrink: 0;
+    }
+    .live-speaker { font-weight: 700 }
+    .live-text { color: #94a3b8; font-style: italic; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+
+    .card-transcript {
+      flex: 1; overflow-y: auto; padding: 12px 16px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .card-empty { color: #334155; font-size: 13px; text-align: center; padding: 30px 0 }
+
+    .segment {
+      background: #13151f; border-left: 3px solid #334155;
+      border-radius: 0 6px 6px 0; padding: 8px 12px;
+    }
+    .seg-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 4px }
+    .avatar {
+      width: 22px; height: 22px; border-radius: 50%;
+      font-size: 9px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .seg-name  { font-weight: 600; font-size: 12px }
+    .seg-time  { font-size: 11px; color: #475569; margin-left: auto }
+    .seg-text  { color: #cbd5e1; font-size: 13px; line-height: 1.5 }
+
+    .card-toolbar {
+      padding: 8px 16px; background: #13151f;
+      border-top: 1px solid #1e2235;
+      display: flex; gap: 6px; flex-shrink: 0;
+    }
+    .btn-sm {
+      padding: 6px 12px; border-radius: 5px; border: none;
+      cursor: pointer; font-size: 11px; font-weight: 600;
+    }
+    .btn-red    { background: #7f1d1d; color: #fca5a5 }
+    .btn-red:hover    { background: #991b1b }
+    .btn-gray   { background: #1e293b; color: #94a3b8 }
+    .btn-gray:hover   { background: #273449 }
+    .btn-orange { background: #78350f; color: #fcd34d }
+    .btn-orange:hover { background: #92400e }
+
+    /* Swap modal */
+    .modal-bg {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.6); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    .modal-bg.open { display: flex }
+    .modal {
+      background: #1a1d2e; border: 1px solid #2d3148; border-radius: 12px;
+      padding: 24px; min-width: 320px; max-width: 480px; width: 90%;
+    }
+    .modal h3 { font-size: 15px; color: #e2e8f0; margin-bottom: 16px }
+    .modal-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px }
+    .modal-row label { font-size: 12px; color: #94a3b8; width: 80px }
+    .modal-row select {
+      flex: 1; padding: 7px 10px; background: #13151f;
+      border: 1px solid #2d3148; border-radius: 6px;
+      color: #e2e8f0; font-size: 13px;
+    }
+    .modal-btns { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end }
+    .modal-btns button { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600 }
+    .modal-btns .apply { background: #6366f1; color: #fff }
+    .modal-btns .cancel { background: #1e293b; color: #94a3b8 }
+
+    ::-webkit-scrollbar { width: 4px }
+    ::-webkit-scrollbar-thumb { background: #2d3148; border-radius: 3px }
+  </style>
+</head>
+<body>
+<header>
+  <span class="logo">⬡ NoteAI</span>
+  <span class="tagline">AI Meeting Transcription</span>
+</header>
+
+<div class="join-bar">
+  <input id="meetUrl" type="url"
+    placeholder="Paste Google Meet link — https://meet.google.com/abc-defg-hij"
+    autocomplete="off" />
+  <button class="btn-join" id="btnJoin" onclick="joinMeeting()">+ Start Recording</button>
+</div>
+
+<div id="meetings">
+  <div class="empty-home" id="emptyHome">
+    <span class="icon">🎙</span>
+    <p>Paste a meeting link above to start recording</p>
+  </div>
+</div>
+
+<!-- Swap speakers modal -->
+<div class="modal-bg" id="swapModal">
+  <div class="modal">
+    <h3>🔄 Swap Speakers</h3>
+    <div class="modal-row">
+      <label>Speaker A</label>
+      <select id="swapA"></select>
+    </div>
+    <div class="modal-row">
+      <label>Speaker B</label>
+      <select id="swapB"></select>
+    </div>
+    <div class="modal-btns">
+      <button class="cancel" onclick="closeSwap()">Cancel</button>
+      <button class="apply" onclick="applySwap()">Swap</button>
+    </div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
