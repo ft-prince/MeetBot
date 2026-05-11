@@ -41,14 +41,16 @@ export async function saveSummary(
   console.log(`[meeting] Summary saved for ${meetingId}`);
 }
 
-export async function getMeetingSummary(meetingId: string) {
+export async function getMeetingSummary(meetingId: string, userId?: string) {
   const result = await db.query(
-    `SELECT id, meeting_code, title, summary, key_insights, started_at, ended_at, duration_ms
+    `SELECT id, meeting_code, title, summary, key_insights, started_at, ended_at, duration_ms, user_id
      FROM meetings WHERE id = $1`,
     [meetingId]
   );
   if (!result.rows[0]) return null;
   const row = result.rows[0];
+  // Deny access if the meeting belongs to a different user
+  if (userId && row.user_id && row.user_id !== userId) return null;
   return {
     id: row.id,
     meetingCode: row.meeting_code,
@@ -110,7 +112,14 @@ export async function logDomEvent(
   );
 }
 
-export async function getMeetingTranscript(meetingId: string) {
+export async function getMeetingTranscript(meetingId: string, userId?: string) {
+  // Verify ownership before returning transcript
+  if (userId) {
+    const check = await db.query('SELECT user_id FROM meetings WHERE id = $1', [meetingId]);
+    const row = check.rows[0];
+    if (!row) return [];
+    if (row.user_id && row.user_id !== userId) return null; // null = forbidden
+  }
   const result = await db.query(
     `SELECT id, speaker_label, speaker_name, text, start_ms, end_ms, confidence
      FROM transcript_segments
@@ -121,13 +130,15 @@ export async function getMeetingTranscript(meetingId: string) {
   return result.rows;
 }
 
-export async function listMeetings() {
+export async function listMeetings(userId: string) {
   const result = await db.query(
     `SELECT id, meeting_code, title, started_at, ended_at, duration_ms,
             CASE WHEN summary IS NOT NULL AND summary != '' THEN true ELSE false END AS has_summary
      FROM meetings
+     WHERE user_id = $1
      ORDER BY started_at DESC
-     LIMIT 50`
+     LIMIT 50`,
+    [userId]
   );
   return result.rows;
 }

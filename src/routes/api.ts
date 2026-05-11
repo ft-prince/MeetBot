@@ -4,6 +4,16 @@ import { botManager } from '../bot/botManager';
 
 const router = Router();
 
+// Require auth on all /api routes except /health
+router.use((req: Request, res: Response, next) => {
+  if (req.path === '/health') return next();
+  if (!req.session.userId) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return;
+  }
+  next();
+});
+
 // POST /api/meetings/join
 router.post('/meetings/join', async (req: Request, res: Response) => {
   const { meetingUrl } = req.body as { meetingUrl?: string };
@@ -14,8 +24,7 @@ router.post('/meetings/join', async (req: Request, res: Response) => {
   }
 
   try {
-    const userId = req.session.userId;
-    const meetingId = await botManager.launch(meetingUrl, userId);
+    const meetingId = await botManager.launch(meetingUrl, req.session.userId);
     res.json({ meetingId, status: 'bot_launching' });
   } catch (err) {
     console.error('[api] join error:', err);
@@ -30,9 +39,9 @@ router.post('/meetings/:id/stop', async (req: Request, res: Response) => {
 });
 
 // GET /api/meetings
-router.get('/meetings', async (_req: Request, res: Response) => {
+router.get('/meetings', async (req: Request, res: Response) => {
   try {
-    res.json({ meetings: await listMeetings() });
+    res.json({ meetings: await listMeetings(req.session.userId!) });
   } catch (err) {
     res.status(500).json({ error: 'Failed to list meetings' });
   }
@@ -41,7 +50,9 @@ router.get('/meetings', async (_req: Request, res: Response) => {
 // GET /api/meetings/:id/transcript
 router.get('/meetings/:id/transcript', async (req: Request, res: Response) => {
   try {
-    res.json({ segments: await getMeetingTranscript(req.params.id) });
+    const segments = await getMeetingTranscript(req.params.id, req.session.userId);
+    if (segments === null) { res.status(403).json({ error: 'Forbidden' }); return; }
+    res.json({ segments });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get transcript' });
   }
@@ -50,7 +61,7 @@ router.get('/meetings/:id/transcript', async (req: Request, res: Response) => {
 // GET /api/meetings/:id/summary
 router.get('/meetings/:id/summary', async (req: Request, res: Response) => {
   try {
-    const result = await getMeetingSummary(req.params.id);
+    const result = await getMeetingSummary(req.params.id, req.session.userId);
     if (!result) { res.status(404).json({ error: 'Meeting not found' }); return; }
     res.json(result);
   } catch (err) {
