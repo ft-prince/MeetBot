@@ -8,19 +8,15 @@ export interface Meeting {
   startedAt: Date;
 }
 
-export async function createMeeting(meetingCode: string): Promise<Meeting> {
+export async function createMeeting(meetingCode: string, userId?: string): Promise<Meeting> {
   const result = await db.query(
-    `INSERT INTO meetings (id, meeting_code, started_at)
-     VALUES ($1, $2, now())
+    `INSERT INTO meetings (id, meeting_code, user_id, started_at)
+     VALUES ($1, $2, $3, now())
      RETURNING id, meeting_code, started_at`,
-    [uuidv4(), meetingCode]
+    [uuidv4(), meetingCode, userId || null]
   );
   const row = result.rows[0];
-  return {
-    id: row.id,
-    meetingCode: row.meeting_code,
-    startedAt: row.started_at,
-  };
+  return { id: row.id, meetingCode: row.meeting_code, startedAt: row.started_at };
 }
 
 export async function endMeeting(meetingId: string): Promise<void> {
@@ -31,6 +27,38 @@ export async function endMeeting(meetingId: string): Promise<void> {
      WHERE id = $1`,
     [meetingId]
   );
+}
+
+export async function saveSummary(
+  meetingId: string,
+  summary: string,
+  keyInsights: string[]
+): Promise<void> {
+  await db.query(
+    `UPDATE meetings SET summary = $1, key_insights = $2 WHERE id = $3`,
+    [summary, JSON.stringify(keyInsights), meetingId]
+  );
+  console.log(`[meeting] Summary saved for ${meetingId}`);
+}
+
+export async function getMeetingSummary(meetingId: string) {
+  const result = await db.query(
+    `SELECT id, meeting_code, title, summary, key_insights, started_at, ended_at, duration_ms
+     FROM meetings WHERE id = $1`,
+    [meetingId]
+  );
+  if (!result.rows[0]) return null;
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    meetingCode: row.meeting_code,
+    title: row.title,
+    summary: row.summary,
+    keyInsights: row.key_insights || [],
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    durationMs: row.duration_ms,
+  };
 }
 
 export async function saveSegment(
@@ -56,7 +84,6 @@ export async function saveSegment(
   );
 }
 
-// Update all segments in a meeting when a label gets resolved to a name
 export async function updateSpeakerName(
   meetingId: string,
   speakerLabel: string,
@@ -85,17 +112,10 @@ export async function logDomEvent(
 
 export async function getMeetingTranscript(meetingId: string) {
   const result = await db.query(
-    `SELECT
-       ts.id,
-       ts.speaker_label,
-       ts.speaker_name,
-       ts.text,
-       ts.start_ms,
-       ts.end_ms,
-       ts.confidence
-     FROM transcript_segments ts
-     WHERE ts.meeting_id = $1
-     ORDER BY ts.start_ms ASC`,
+    `SELECT id, speaker_label, speaker_name, text, start_ms, end_ms, confidence
+     FROM transcript_segments
+     WHERE meeting_id = $1
+     ORDER BY start_ms ASC`,
     [meetingId]
   );
   return result.rows;
@@ -103,7 +123,8 @@ export async function getMeetingTranscript(meetingId: string) {
 
 export async function listMeetings() {
   const result = await db.query(
-    `SELECT id, meeting_code, title, started_at, ended_at, duration_ms
+    `SELECT id, meeting_code, title, started_at, ended_at, duration_ms,
+            CASE WHEN summary IS NOT NULL AND summary != '' THEN true ELSE false END AS has_summary
      FROM meetings
      ORDER BY started_at DESC
      LIMIT 50`

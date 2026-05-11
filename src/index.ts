@@ -1,15 +1,22 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import session from 'express-session';
+import connectPgSimple from 'connect-pg-simple';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import { config } from './config';
-import { dbReady } from './db/client';
+import { db, dbReady } from './db/client';
 import { handleConnection } from './ws/ingestHandler';
 import apiRouter from './routes/api';
+import authRouter from './routes/auth';
+import calendarRouter from './routes/calendar';
+import { startScheduler } from './services/schedulerService';
+// session type augmentation — loaded via tsconfig includes
+
+const PgSession = connectPgSimple(session);
 
 async function main() {
-  // Verify DB connection
   try {
     await dbReady();
     console.log('[startup] Database connected');
@@ -19,18 +26,39 @@ async function main() {
   }
 
   const app = express();
-  app.use(cors({ origin: '*' }));
+  app.use(cors({ origin: true, credentials: true }));
   app.use(express.json());
+
+  // ── Sessions ─────────────────────────────────────────────────────
+  app.use(
+    session({
+      store: new PgSession({
+        pool: db,
+        tableName: 'session',
+        createTableIfMissing: true,
+      }),
+      secret: config.sessionSecret,
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+        httpOnly: true,
+        sameSite: 'lax',
+      },
+    })
+  );
+
+  // ── Routes ────────────────────────────────────────────────────────
+  app.use('/auth', authRouter);
   app.use('/api', apiRouter);
+  app.use('/api/calendar', calendarRouter);
 
   // Serve the web UI
-  const frontendDir = path.resolve(__dirname, '/Users/ftprince/renataIot/noteAI/backend/frontend');
+  const frontendDir = path.resolve('/Users/ftprince/renataIot/noteAI/backend/frontend');
   app.use(express.static(frontendDir));
-  app.get('/', (_req, res) => res.sendFile(path.join(frontendDir, 'index.html')));
+  app.get('*', (_req, res) => res.sendFile(path.join(frontendDir, 'index.html')));
 
   const server = http.createServer(app);
-
-  // Single WebSocket server handles both /audio and /panel paths
   const wss = new WebSocketServer({ server });
 
   wss.on('connection', (ws, req) => {
@@ -42,11 +70,14 @@ async function main() {
 
   server.listen(config.port, () => {
     console.log(`[startup] NoteAI backend running on port ${config.port}`);
-    console.log(`[startup]   Audio ingest : ws://localhost:${config.port}/audio?meetingId=<id>`);
-    console.log(`[startup]   Panel stream : ws://localhost:${config.port}/panel?meetingId=<id>`);
-    console.log(`[startup]   REST API     : http://localhost:${config.port}/api`);
     console.log(`[startup]   Web UI       : http://localhost:${config.port}`);
+    console.log(`[startup]   REST API     : http://localhost:${config.port}/api`);
+    console.log(`[startup]   Google Auth  : http://localhost:${config.port}/auth/google`);
+    console.log(`[startup]   Panel stream : ws://localhost:${config.port}/panel?meetingId=<id>`);
   });
+
+  // Start auto-join scheduler (checks every 60s for upcoming calendar meetings)
+  startScheduler();
 }
 
 main().catch(err => {

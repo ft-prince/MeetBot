@@ -1,20 +1,25 @@
-import { chromium, Browser, BrowserContext, Page } from 'playwright'
+import { chromium, BrowserContext, Page } from 'playwright'
 import path from 'path'
+import os from 'os'
+import fs from 'fs'
 
 export interface BotOptions {
   meetingUrl: string
   displayName?: string
-  onAudioChunk?: (chunk: Buffer) => void          // legacy merged audio (unused now)
-  onTrackAudio?: (chunk: Buffer, trackId: string) => void  // per-participant audio
-  onTrackInfo?: (trackId: string, name: string) => void    // track → participant name
+  onAudioChunk?: (chunk: Buffer) => void
+  onTrackAudio?: (chunk: Buffer, trackId: string) => void
+  onTrackInfo?: (trackId: string, name: string) => void
   onSpeakerEvent?: (event: Record<string, unknown>) => void
   onJoined?: () => void
   onEnded?: () => void
   onError?: (err: Error) => void
 }
 
+// Persistent profile dir — session cookies survive between bot restarts
+const BOT_PROFILE_DIR = process.env.BOT_CHROME_PROFILE_DIR ||
+  path.join(os.homedir(), '.noteai', 'bot-profile')
+
 export class MeetBot {
-  private browser: Browser | null = null
   private context: BrowserContext | null = null
   private page: Page | null = null
   private ended = false
@@ -22,32 +27,38 @@ export class MeetBot {
   async start(opts: BotOptions): Promise<void> {
     const { meetingUrl, displayName = 'NoteAI Recorder' } = opts
 
-    this.browser = await chromium.launch({
-      headless: false,
-      args: [
-        '--no-sandbox',
-        '--use-fake-ui-for-media-stream',
-        '--disable-blink-features=AutomationControlled',
-        '--autoplay-policy=no-user-gesture-required',
-        '--disable-gpu',
-        '--no-first-run',
-        '--mute-audio',   // bot never makes sound
-      ],
-    })
+    // Ensure profile dir exists
+    fs.mkdirSync(BOT_PROFILE_DIR, { recursive: true })
+    console.log(`[bot] Using persistent profile: ${BOT_PROFILE_DIR}`)
 
-    this.context = await this.browser.newContext({
+    const ARGS = [
+      '--no-sandbox',
+      '--use-fake-ui-for-media-stream',
+      '--disable-blink-features=AutomationControlled',
+      '--autoplay-policy=no-user-gesture-required',
+      '--disable-gpu',
+      '--no-first-run',
+      '--mute-audio',
+      '--disable-infobars',
+      '--disable-default-apps',
+      '--window-size=1280,800',
+    ]
+
+    // launchPersistentContext saves cookies/session — bot stays logged in
+    this.context = await chromium.launchPersistentContext(BOT_PROFILE_DIR, {
+      headless: false,
+      args: ARGS,
       permissions: ['microphone', 'camera'],
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     })
 
     this.page = await this.context.newPage()
 
     this.page.on('crash', () => console.error('[bot] Page crashed'))
-    // Forward browser console logs so we can debug the injected script
     this.page.on('console', msg => {
       if (msg.text().startsWith('[NoteAI]')) console.log('[page]', msg.text())
     })
 
-    // Per-track audio: one stream per participant (no mixing)
     await this.page.exposeFunction('noteAISendTrackAudio', (samples: number[], trackId: string) => {
       if (opts.onTrackAudio) {
         const i16 = new Int16Array(samples)
@@ -55,7 +66,6 @@ export class MeetBot {
       }
     })
 
-    // Track → participant name resolved by audioInjector
     await this.page.exposeFunction('noteAISendTrackInfo', (trackId: string, name: string) => {
       opts.onTrackInfo?.(trackId, name)
     })
@@ -66,28 +76,31 @@ export class MeetBot {
       }
     })
 
-    // Inject audio capture + speaker DOM observer before Meet JS loads
     await this.page.addInitScript({
       path: path.resolve(__dirname, 'audioInjector.js'),
     })
 
     console.log(`[bot] Navigating to ${meetingUrl}`)
     await this.page.goto(meetingUrl, { waitUntil: 'commit', timeout: 30_000 })
+    // Brief pause for Meet JS to initialize before pre-join interaction
+    await this.page.waitForTimeout(2000)
 
-    // Handle the pre-join screen (set name, disable cam/mic, click join)
     await this.handlePreJoin(displayName)
+
+    if (this.ended) {
+      // Blocked during pre-join (can't join error)
+      opts.onError?.(new Error("Bot was blocked from joining — check account permissions"))
+      await this.stop()
+      return
+    }
 
     opts.onJoined?.()
     console.log('[bot] Joined meeting as', displayName)
 
-    // Try to open the participants panel for better name visibility
     await this.tryOpenPeoplePanel()
-
-    // Start polling participants panel for names every 5s
     this.pollParticipantNames(opts)
-
-    // Watch for meeting end
-    this.watchForEnd(opts.onEnded)
+    this.watchForAlone(opts.onEnded)
+    this.watchForEnd(opts.onEnded, opts.onError)
   }
 
   private async tryOpenPeoplePanel(): Promise<void> {
@@ -107,14 +120,12 @@ export class MeetBot {
     console.log('[bot] Could not open people panel — will scrape tiles instead')
   }
 
-  // Poll the participants panel every 5s and emit speaker events for each person found
   private pollParticipantNames(opts: BotOptions): void {
     const page = this.page!
     const interval = setInterval(async () => {
       if (this.ended) { clearInterval(interval); return }
       try {
         await page.evaluate(async () => {
-          // Hover each tile so "More options for <name>" buttons appear
           for (const tile of Array.from(document.querySelectorAll('[data-participant-id]')) as HTMLElement[]) {
             const r = tile.getBoundingClientRect()
             const x = r.x + r.width / 2, y = r.y + r.height / 2
@@ -123,10 +134,6 @@ export class MeetBot {
           }
           await new Promise<void>(resolve => setTimeout(resolve, 350))
 
-          // Use ONLY button-revealed names = remote participants.
-          // Self-view tile has no "More options for" button → excluded automatically.
-          // Bot tile "More options for Note" → filtered by /^note/i.
-          // This gives us only real remote participants, in DOM order = WebRTC track order.
           const remoteNames = Array.from(document.querySelectorAll('[data-participant-id]'))
             .map(tile => {
               for (const btn of Array.from(tile.querySelectorAll('button[aria-label]'))) {
@@ -137,12 +144,7 @@ export class MeetBot {
             })
             .filter((n): n is string => !!n && !/^note|recorder/i.test(n) && n.length > 1)
 
-          // Deduplicate names — Meet sometimes shows the same participant in multiple
-          // tiles (e.g. pinned + grid view), which shifts track→tile index mapping.
-          // Using unique names preserves correct 1-to-1 track→participant pairing.
           const uniqueNames = [...new Set(remoteNames)]
-
-          // Map audio tracks to remote participants by index
           const tracks = (window as unknown as { __noteAITrackList: { trackId: string; index: number }[] }).__noteAITrackList || []
           for (const { trackId, index } of tracks) {
             const name = uniqueNames[index]
@@ -152,7 +154,6 @@ export class MeetBot {
           }
         })
 
-        // Also emit participant_known for correlator fallback
         const names = await page.evaluate(() => {
           return Array.from(document.querySelectorAll('[data-participant-id]')).map(tile => {
             for (const btn of Array.from(tile.querySelectorAll('button[aria-label]'))) {
@@ -186,7 +187,6 @@ export class MeetBot {
     if (this.ended) return
     this.ended = true
 
-    // Click "Leave call" so the bot properly exits the meeting before closing
     if (this.page) {
       try {
         const leaveSelectors = [
@@ -206,34 +206,20 @@ export class MeetBot {
       } catch { /* page may already be gone */ }
     }
 
-    await this.browser?.close()
-    this.browser = null
+    await this.context?.close()
     this.context = null
     this.page = null
     console.log('[bot] Browser closed')
   }
 
-  // ── Pre-join flow ───────────────────────────────────────────────
+  // ── Pre-join flow ──────────────────────────────────────────────────────────
 
   private async handlePreJoin(displayName: string): Promise<void> {
     const page = this.page!
-
-    // Wait for pre-join screen (name input or join button)
-    await page.waitForTimeout(2000)
-
-    // Set display name if field is present
     await this.trySetName(page, displayName)
-
-    // Turn off microphone if button is present
     await this.tryMuteMic(page)
-
-    // Turn off camera if button is present
     await this.tryDisableCamera(page)
-
-    // Click "Join now" / "Ask to join"
     await this.tryClickJoin(page)
-
-    // Wait for main meeting UI
     await this.waitForMeetingUI(page)
   }
 
@@ -287,15 +273,13 @@ export class MeetBot {
 
   private async tryClickJoin(page: Page): Promise<void> {
     const selectors = [
-      '[jsname="Qx7uuf"]',                    // "Join now"
+      '[jsname="Qx7uuf"]',
       'button[data-is-confirmed="true"]',
       '[aria-label*="Join now" i]',
       '[aria-label*="Ask to join" i]',
       'button:has-text("Join now")',
       'button:has-text("Ask to join")',
     ]
-
-    // Wait up to 10s for a join button to appear
     for (let i = 0; i < 20; i++) {
       if (this.ended) return
       for (const sel of selectors) {
@@ -314,30 +298,89 @@ export class MeetBot {
   }
 
   private async waitForMeetingUI(page: Page): Promise<void> {
-    const selectors = [
-      '[data-participant-id]',
-      '[data-ssrc]',
-      '[jsname="DkfN1b"]',
-    ]
-    for (let i = 0; i < 30; i++) {
+    const selectors = ['[data-participant-id]', '[data-ssrc]', '[jsname="DkfN1b"]']
+    // Wait up to 5 minutes — covers waiting rooms where host must admit the bot
+    for (let i = 0; i < 300; i++) {
       if (this.ended) return
+      if (await this.checkCantJoin(page)) return
       for (const sel of selectors) {
         try {
           const el = await page.$(sel)
           if (el) { console.log('[bot] Meeting UI detected'); return }
         } catch { return }
       }
+      if (i > 0 && i % 30 === 0) {
+        console.log(`[bot] Waiting for meeting UI (${i}s) — may be in waiting room`)
+      }
       try { await page.waitForTimeout(1000) } catch { return }
     }
-    console.warn('[bot] Meeting UI not detected after 30s — continuing anyway')
+    console.warn('[bot] Meeting UI not detected after 5 minutes — giving up')
+    this.ended = true
   }
 
-  // ── Meeting end detection ───────────────────────────────────────
+  private async checkCantJoin(page: Page): Promise<boolean> {
+    try {
+      const blocked = await page.evaluate(() => {
+        // Only match the exact full-page error — not partial text in tooltips/links
+        const h1 = document.querySelector('h1, h2')?.textContent || ''
+        const hasErrorHeading = /you can.t join this video call/i.test(h1)
+        const hasErrorEl = !!document.querySelector('[data-call-error], [jsname="r8qRAd"]')
+        // URL leaves meet.google.com entirely (e.g. redirected to accounts or error page)
+        const leftMeet = !location.href.includes('meet.google.com')
+        return hasErrorHeading || hasErrorEl || leftMeet
+      })
+      if (blocked) {
+        console.warn("[bot] Blocked: 'You can't join this video call'")
+        this.ended = true
+        return true
+      }
+    } catch {}
+    return false
+  }
 
-  private watchForEnd(onEnded?: () => void): void {
+  // ── Alone detection ───────────────────────────────────────────────────────
+
+  private watchForAlone(onEnded?: () => void): void {
+    const page = this.page!
+    const ALONE_LIMIT_MS = 2 * 60 * 1000
+    const CHECK_INTERVAL_MS = 30_000
+    const GRACE_MS = 60_000
+    let aloneStartedAt: number | null = null
+    const joinedAt = Date.now()
+
+    const interval = setInterval(async () => {
+      if (this.ended) { clearInterval(interval); return }
+      if (Date.now() - joinedAt < GRACE_MS) return
+      try {
+        const remoteCount = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('[data-participant-id]')).filter(tile =>
+            Array.from(tile.querySelectorAll('button[aria-label]')).some(btn =>
+              (btn.getAttribute('aria-label') || '').match(/^More options for (.+)$/i)
+            )
+          ).length
+        )
+        if (remoteCount === 0) {
+          if (aloneStartedAt === null) {
+            aloneStartedAt = Date.now()
+            console.log('[bot] Alone in meeting — will leave in 2 minutes if no one joins')
+          } else if (Date.now() - aloneStartedAt >= ALONE_LIMIT_MS) {
+            console.log('[bot] Been alone for 2 minutes — leaving meeting')
+            clearInterval(interval)
+            if (!this.ended) { this.ended = true; onEnded?.(); await this.stop() }
+          }
+        } else {
+          if (aloneStartedAt !== null) console.log(`[bot] Participants rejoined (${remoteCount})`)
+          aloneStartedAt = null
+        }
+      } catch {}
+    }, CHECK_INTERVAL_MS)
+  }
+
+  // ── Meeting end detection ─────────────────────────────────────────────────
+
+  private watchForEnd(onEnded?: () => void, onError?: (err: Error) => void): void {
     const page = this.page!
 
-    // Detect URL change away from Meet (meeting ended / kicked)
     page.on('framenavigated', (frame) => {
       if (frame === page.mainFrame() && !frame.url().includes('meet.google.com/')) {
         if (!this.ended) {
@@ -349,7 +392,6 @@ export class MeetBot {
       }
     })
 
-    // Detect "You've been removed" or "Meeting ended" dialog
     const checkEndedUI = setInterval(async () => {
       if (this.ended) { clearInterval(checkEndedUI); return }
       try {
@@ -359,6 +401,13 @@ export class MeetBot {
           clearInterval(checkEndedUI)
           console.log('[bot] Meeting ended (UI signal)')
           onEnded?.()
+          await this.stop()
+          return
+        }
+        const blocked = await this.checkCantJoin(page)
+        if (blocked) {
+          clearInterval(checkEndedUI)
+          onError?.(new Error("Can't join: meeting requires Google sign-in or host denied admission"))
           await this.stop()
         }
       } catch {}

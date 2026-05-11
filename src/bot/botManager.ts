@@ -1,78 +1,80 @@
-import { MeetBot } from './meetBot'
-import { broadcastToMeeting, createBotSession, endBotSession, forwardAudio, forwardEvent, forwardTrackAudio, setTrackName } from '../ws/ingestHandler'
+import { MeetBot } from './meetBot';
+import {
+  broadcastToMeeting,
+  createBotSession,
+  endBotSession,
+  forwardEvent,
+  forwardTrackAudio,
+  setTrackName,
+} from '../ws/ingestHandler';
 
-const activeBots = new Map<string, MeetBot>()
+const activeBots = new Map<string, MeetBot>();
 
 function extractMeetingId(url: string): string {
-  const m = url.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/)
-  return m ? m[1] : `bot-${Date.now()}`
+  const m = url.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
+  return m ? m[1] : `bot-${Date.now()}`;
 }
 
 export const botManager = {
-  async launch(meetingUrl: string): Promise<string> {
-    const meetingId = extractMeetingId(meetingUrl)
+  async launch(meetingUrl: string, userId?: string): Promise<string> {
+    const meetingId = extractMeetingId(meetingUrl);
+    if (activeBots.has(meetingId)) return meetingId;
 
-    if (activeBots.has(meetingId)) return meetingId
-
-    const bot = new MeetBot()
-    activeBots.set(meetingId, bot)
+    const bot = new MeetBot();
+    activeBots.set(meetingId, bot);
 
     // Create the ingest session before bot joins so it's ready to receive audio
-    await createBotSession(meetingId)
+    await createBotSession(meetingId, userId);
 
     bot.start({
       meetingUrl,
       displayName: 'NoteAI Recorder',
 
       onTrackAudio: (chunk, trackId) => {
-        forwardTrackAudio(meetingId, chunk, trackId)
+        forwardTrackAudio(meetingId, chunk, trackId);
       },
 
       onTrackInfo: (trackId, name) => {
-        setTrackName(meetingId, trackId, name)
+        setTrackName(meetingId, trackId, name);
       },
 
       onSpeakerEvent: (event) => {
-        forwardEvent(meetingId, event)
+        forwardEvent(meetingId, event);
       },
 
       onJoined: () => {
-        broadcastToMeeting(meetingId, { type: 'bot.joined', meetingId })
-        console.log('[botManager] Bot joined', meetingId)
+        broadcastToMeeting(meetingId, { type: 'bot.joined', meetingId });
+        console.log('[botManager] Bot joined', meetingId);
       },
 
       onEnded: () => {
-        activeBots.delete(meetingId)
-        broadcastToMeeting(meetingId, { type: 'meeting.ended', meetingId })
+        activeBots.delete(meetingId);
+        broadcastToMeeting(meetingId, { type: 'meeting.ended', meetingId });
+        // endBotSession generates summary + saves everything
+        endBotSession(meetingId).catch(console.error);
       },
 
       onError: (err) => {
-        console.error('[botManager] Bot error:', err)
-        activeBots.delete(meetingId)
+        console.error('[botManager] Bot error:', err);
+        activeBots.delete(meetingId);
       },
     }).catch((err: Error) => {
-      // Ignore "Target closed" errors — those happen when stop() is called mid-start
       if (!err.message?.includes('closed') && !err.message?.includes('Target')) {
-        console.error('[botManager] Failed to start bot:', err)
+        console.error('[botManager] Failed to start bot:', err);
       }
-      activeBots.delete(meetingId)
-    })
+      activeBots.delete(meetingId);
+    });
 
-    return meetingId
+    return meetingId;
   },
 
   async stop(meetingId: string): Promise<void> {
-    const bot = activeBots.get(meetingId)
-    activeBots.delete(meetingId)
-    // Leave the meeting and close browser in parallel with session teardown
-    await Promise.all([
-      bot?.stop(),
-      endBotSession(meetingId),
-    ])
+    const bot = activeBots.get(meetingId);
+    activeBots.delete(meetingId);
+    await Promise.all([bot?.stop(), endBotSession(meetingId)]);
   },
 
-  // Returns list of all active meeting IDs (for status/debug)
   active(): string[] {
-    return [...activeBots.keys()]
+    return [...activeBots.keys()];
   },
-}
+};

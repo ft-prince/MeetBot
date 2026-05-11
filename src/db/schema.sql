@@ -1,61 +1,107 @@
--- NoteAI Database Schema
+-- NoteAI Database Schema (idempotent — safe to re-run)
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- One row per Google Meet session
-CREATE TABLE IF NOT EXISTS meetings (
-  id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  meeting_code  TEXT NOT NULL,           -- e.g. "abc-defg-hij"
-  title         TEXT,
-  started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  ended_at      TIMESTAMPTZ,
-  duration_ms   INTEGER,
-  metadata      JSONB DEFAULT '{}'
+-- ── Users (Google OAuth) ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  google_id        TEXT UNIQUE NOT NULL,
+  email            TEXT NOT NULL,
+  name             TEXT NOT NULL,
+  picture          TEXT,
+  access_token     TEXT,
+  refresh_token    TEXT,
+  token_expiry     TIMESTAMPTZ,
+  auto_join_minutes INTEGER DEFAULT 2,   -- join N minutes before meeting starts
+  created_at       TIMESTAMPTZ DEFAULT now(),
+  updated_at       TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_meetings_code ON meetings(meeting_code);
-CREATE INDEX IF NOT EXISTS idx_meetings_started ON meetings(started_at DESC);
+-- ── Sessions (connect-pg-simple) ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS session (
+  sid     TEXT PRIMARY KEY,
+  sess    JSON NOT NULL,
+  expire  TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_expire ON session(expire);
 
--- Speaker identity within a meeting
--- SPEAKER_0, SPEAKER_1 labels mapped to real names (from DOM)
+-- ── Meetings ─────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS meetings (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  meeting_code     TEXT NOT NULL,
+  title            TEXT,
+  user_id          UUID REFERENCES users(id) ON DELETE SET NULL,
+  calendar_event_id TEXT,              -- Google Calendar event ID
+  scheduled_start  TIMESTAMPTZ,       -- when meeting was supposed to start
+  started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at         TIMESTAMPTZ,
+  duration_ms      INTEGER,
+  summary          TEXT,              -- AI-generated summary
+  key_insights     JSONB DEFAULT '[]', -- AI-generated bullet points
+  metadata         JSONB DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_meetings_code    ON meetings(meeting_code);
+CREATE INDEX IF NOT EXISTS idx_meetings_started ON meetings(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_meetings_user    ON meetings(user_id);
+
+-- ── Calendar Events ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  google_event_id  TEXT NOT NULL,
+  title            TEXT NOT NULL,
+  meet_url         TEXT NOT NULL,
+  start_time       TIMESTAMPTZ NOT NULL,
+  end_time         TIMESTAMPTZ NOT NULL,
+  attendees        JSONB DEFAULT '[]',
+  auto_join        BOOLEAN DEFAULT false,
+  meeting_id       UUID REFERENCES meetings(id) ON DELETE SET NULL,
+  synced_at        TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, google_event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_user_time ON calendar_events(user_id, start_time);
+
+-- ── Speakers ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS speakers (
-  id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  meeting_id    UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
-  diarization_label TEXT NOT NULL,       -- "SPEAKER_0", "SPEAKER_1", etc.
-  display_name  TEXT,                    -- "John Smith" from Meet DOM
-  confirmed     BOOLEAN DEFAULT false,   -- true once DOM-matched
-  created_at    TIMESTAMPTZ DEFAULT now(),
+  id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  meeting_id        UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+  diarization_label TEXT NOT NULL,
+  display_name      TEXT,
+  confirmed         BOOLEAN DEFAULT false,
+  created_at        TIMESTAMPTZ DEFAULT now(),
   UNIQUE(meeting_id, diarization_label)
 );
 
 CREATE INDEX IF NOT EXISTS idx_speakers_meeting ON speakers(meeting_id);
 
--- One row per finalized transcript segment
+-- ── Transcript Segments ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS transcript_segments (
   id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   meeting_id    UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
   speaker_id    UUID REFERENCES speakers(id),
-  speaker_label TEXT,                    -- diarization label (SPEAKER_0)
-  speaker_name  TEXT,                    -- resolved name, nullable until identified
+  speaker_label TEXT,
+  speaker_name  TEXT,
   text          TEXT NOT NULL,
-  start_ms      INTEGER NOT NULL,        -- ms from meeting start
+  start_ms      INTEGER NOT NULL,
   end_ms        INTEGER NOT NULL,
   confidence    FLOAT,
-  word_data     JSONB,                   -- [{word, start_ms, end_ms, confidence}]
+  word_data     JSONB,
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_segments_meeting ON transcript_segments(meeting_id, start_ms);
-CREATE INDEX IF NOT EXISTS idx_segments_search ON transcript_segments USING GIN (to_tsvector('english', text));
+CREATE INDEX IF NOT EXISTS idx_segments_search  ON transcript_segments
+  USING GIN (to_tsvector('english', text));
 
--- DOM speaker event log (raw events from content.js)
--- Used for correlation with diarization labels
+-- ── DOM Speaker Events ────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS dom_speaker_events (
   id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   meeting_id    UUID NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
   speaker_name  TEXT NOT NULL,
   event_type    TEXT NOT NULL CHECK (event_type IN ('start', 'end')),
-  event_ms      BIGINT NOT NULL,         -- epoch ms
+  event_ms      BIGINT NOT NULL,
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
