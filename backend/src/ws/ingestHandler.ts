@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import { URL } from 'url';
-import { WhisperClient } from './whisperClient';
+import { DeepgramClient as WhisperClient } from './deepgramClient';
 import { SpeakerCorrelator } from '../services/speakerCorrelator';
 import {
   createMeeting,
