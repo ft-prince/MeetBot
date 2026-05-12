@@ -6,6 +6,8 @@ export type LiveStatus = 'connecting' | 'joining' | 'live' | 'ended' | 'error'
 
 export interface LiveMeeting {
   id: string
+  /** DB UUID — populated from the meeting.ended WS event */
+  dbId?: string
   status: LiveStatus
   statusText: string
   segments: LiveSegment[]
@@ -17,7 +19,7 @@ export interface LiveMeeting {
 interface Store {
   meetings: Map<string, LiveMeeting>
   start: (id: string) => void
-  stop: (id: string) => Promise<void>
+  stop: (id: string) => Promise<string | null>
 }
 
 const Ctx = createContext<Store | null>(null)
@@ -26,6 +28,12 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
   const [meetings, setMeetings] = useState<Map<string, LiveMeeting>>(new Map())
   const wsRef = useRef<Map<string, WebSocket>>(new Map())
   const colorIdxRef = useRef<Map<string, number>>(new Map())
+  // Mirror of meetings state for use inside callbacks without stale closure issues
+  const meetingsRef = useRef<Map<string, LiveMeeting>>(new Map())
+
+  useEffect(() => {
+    meetingsRef.current = meetings
+  }, [meetings])
 
   const update = useCallback((id: string, patch: Partial<LiveMeeting> | ((prev: LiveMeeting) => LiveMeeting)) => {
     setMeetings(prev => {
@@ -53,19 +61,27 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
     return color || SPEAKER_COLORS[0]
   }, [])
 
-  const pollSummary = useCallback(async (id: string, attempts = 0) => {
+  // meetingCode = the state-map key (e.g. "abc-defg-hij")
+  // dbId        = the DB UUID received from the meeting.ended WS event
+  const pollSummary = useCallback(async (meetingCode: string, dbId: string, attempts = 0) => {
     if (attempts > 20) return
     try {
-      const res = await fetch(`/api/meetings/${id}/summary`, { credentials: 'include' })
+      const res = await fetch(`/api/meetings/${dbId}/summary`, { credentials: 'include' })
       if (res.ok) {
-        const data = await res.json()
+        const data = await res.json() as { summary?: string | null; keyInsights?: string[] }
         if (data.summary) {
-          update(id, { summary: { text: data.summary, insights: data.keyInsights || [] }, status: 'ended', statusText: 'Meeting ended' })
+          update(meetingCode, {
+            summary: { text: data.summary, insights: data.keyInsights || [] },
+            status: 'ended',
+            statusText: 'Meeting ended',
+          })
           return
         }
       }
-    } catch {}
-    setTimeout(() => pollSummary(id, attempts + 1), 6000)
+    } catch {
+      // network error — retry below
+    }
+    setTimeout(() => pollSummary(meetingCode, dbId, attempts + 1), 6000)
   }, [update])
 
   const start = useCallback((id: string) => {
@@ -92,7 +108,7 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
     ws.onerror = () => update(id, { status: 'error', statusText: 'Connection error' })
 
     ws.onmessage = (e) => {
-      const msg: WSMessage = JSON.parse(e.data)
+      const msg: WSMessage = JSON.parse(e.data as string)
       switch (msg.type) {
         case 'bot.joined':
           update(id, { status: 'live', statusText: 'Live — transcribing' })
@@ -100,11 +116,17 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
         case 'bot.error':
           update(id, { status: 'error', statusText: msg.error || 'Bot error' })
           break
-        case 'meeting.ended':
-          update(id, { status: 'ended', statusText: 'Meeting ended — generating summary…' })
+        case 'meeting.ended': {
+          const dbId = msg.meetingId
+          update(id, {
+            status: 'ended',
+            statusText: 'Meeting ended — generating summary…',
+            ...(dbId ? { dbId } : {}),
+          })
           ws.close()
-          pollSummary(id)
+          if (dbId) pollSummary(id, dbId)
           break
+        }
         case 'transcript.interim': {
           const name = msg.speakerName || msg.speakerLabel || '?'
           assignColor(id, name)
@@ -142,17 +164,45 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
     }
   }, [assignColor, pollSummary, update])
 
-  const stop = useCallback(async (id: string) => {
+  const stop = useCallback(async (id: string): Promise<string | null> => {
+    let dbId = meetingsRef.current.get(id)?.dbId ?? null
+
     await fetch(`/api/meetings/${id}/stop`, { method: 'POST', credentials: 'include' }).catch(() => {})
     wsRef.current.get(id)?.close()
     wsRef.current.delete(id)
+
+    if (!dbId) {
+      try {
+        const res = await fetch('/api/meetings', { credentials: 'include' })
+        if (res.ok) {
+          const body = await res.json() as { meetings: { id: string; meeting_code: string }[] }
+          dbId = body.meetings.find(m => m.meeting_code === id)?.id ?? null
+        }
+      } catch {
+        // best-effort — caller handles null
+      }
+    }
+
     setMeetings(prev => {
       const next = new Map(prev)
       next.delete(id)
       return next
     })
     colorIdxRef.current.delete(id)
+    return dbId
   }, [])
+
+  // Reconnect any bots that are still running after a page refresh
+  useEffect(() => {
+    fetch('/api/bots/active', { credentials: 'include' })
+      .then(r => r.ok ? r.json() as Promise<{ active: string[] }> : null)
+      .then(data => {
+        if (!data?.active?.length) return
+        for (const code of data.active) start(code)
+      })
+      .catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // intentionally empty — only runs on mount; start is stable
 
   // Cleanup on unmount
   useEffect(() => () => { wsRef.current.forEach(ws => ws.close()) }, [])

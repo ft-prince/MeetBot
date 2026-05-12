@@ -60,8 +60,8 @@ async function main() {
 
   // Serve the React UI build (frontend/dist). Falls back to the legacy vanilla
   // frontend if the React build hasn't been produced yet.
-  const reactBuild = path.resolve('/Users/ftprince/renataIot/noteAI/frontend/dist');
-  const legacyBuild = path.resolve('/Users/ftprince/renataIot/noteAI/backend/frontend-vanilla');
+  const reactBuild = path.resolve(__dirname, '../../frontend/dist');
+  const legacyBuild = path.resolve(__dirname, '../frontend-vanilla');
   const fs = await import('fs');
   const frontendDir = fs.existsSync(path.join(reactBuild, 'index.html')) ? reactBuild : legacyBuild;
   console.log(`[startup] Serving frontend from ${frontendDir}`);

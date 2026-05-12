@@ -42,34 +42,18 @@ export async function generateSummary(
     return { ...empty, summary: 'Meeting too short to summarize.' };
   }
 
-  const prompt = `You are a professional meeting intelligence assistant. Analyze this meeting transcript and produce a rich, structured breakdown.
+  // Devanagari/CJK chars cost 2-3x tokens vs English — keep slice small to stay under TPM limit
+  const transcriptSlice = transcript.slice(0, 5000)
 
-The transcript may contain Hinglish (Hindi + English mixed). Understand both languages and respond entirely in English.
+  const prompt = `You are a meeting intelligence assistant. The transcript may contain Hinglish (Hindi+English). Respond in English only.
 
-Meeting title: ${title || 'Team Meeting'}
+Meeting: ${title || 'Team Meeting'}
 
 Transcript:
-${transcript.slice(0, 14000)}
+${transcriptSlice}
 
-Return ONLY valid JSON (no markdown, no extra text) in this exact shape:
-
-{
-  "detailed_rewrite": "A long, detailed narrative rewrite of the entire meeting (8-15 sentences). Reconstruct the conversation flow in polished prose — who said what, what was debated, how conclusions were reached. Include names, topics, and chronological flow.",
-  "summary": "A concise 3-5 sentence executive summary of the meeting outcome and most important decisions.",
-  "key_insights": [
-    "Concrete action item or key decision — who is responsible and what must happen",
-    "Another action item or decision",
-    "Another insight",
-    "Another insight",
-    "Another insight"
-  ],
-  "important_points": [
-    "Important fact, date, figure, deadline, or name mentioned",
-    "Another important point",
-    "Another important point",
-    "Another important point"
-  ]
-}`;
+Return ONLY valid JSON, no markdown:
+{"detailed_rewrite":"narrative rewrite 6-10 sentences","summary":"3-5 sentence executive summary","key_insights":["action item or decision x5"],"important_points":["key fact or deadline x4"]}`;
 
   try {
     const response = await getGroq().chat.completions.create({
