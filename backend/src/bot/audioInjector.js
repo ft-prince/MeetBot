@@ -215,9 +215,11 @@
   }
 
   // ── Wait for Meet UI then start polling ───────────────────────
+  // [data-participant-id] exists on the pre-join screen (own camera preview), so we
+  // require [data-ssrc] which is only set on tiles once inside the actual meeting.
 
   const waitUI = setInterval(() => {
-    const inMeeting = document.querySelector('[data-participant-id],[data-ssrc],[data-call-ended]')
+    const inMeeting = document.querySelector('[data-ssrc],[data-call-ended]')
     if (inMeeting) {
       clearInterval(waitUI)
       console.log('[NoteAI] Meet UI detected — speaker polling started')

@@ -333,6 +333,8 @@ export function forwardTrackAudio(meetingCode: string, chunk: Buffer, trackId: s
 export function setTrackName(meetingCode: string, trackId: string, name: string): void {
   const session = sessions.get(meetingCode);
   if (!session) return;
+  // Once a track has a confirmed name, don't let DOM re-scraping swap it
+  if (session.trackNames.has(trackId)) return;
   session.trackNames.set(trackId, name);
   console.log(`[session] Track ${trackId.slice(0, 8)} → "${name}"`);
   broadcastToPanel(session.panelClients, {
