@@ -62,6 +62,8 @@ export interface WSMessage {
   label?: string
   name?: string
   error?: string
+  /** DB UUID — present on meeting.ended */
+  meetingId?: string
 }
 
 export interface LiveSegment {

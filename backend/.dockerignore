@@ -7,5 +7,4 @@ dist
 whisper_tiny
 __pycache__
 *.pyc
-frontend-vanilla
 bun.lock

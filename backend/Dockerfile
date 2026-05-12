@@ -16,6 +16,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY bot-login.ts ./
+COPY frontend-vanilla ./frontend-vanilla
 RUN npm run build
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

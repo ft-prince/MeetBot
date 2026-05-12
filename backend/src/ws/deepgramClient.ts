@@ -70,6 +70,12 @@ export class DeepgramClient {
       // Flush any audio that arrived before the connection was ready
       for (const buf of this.audioQueue) this.live!.send(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer)
       this.audioQueue = []
+      // Send keepalive every 8s so silent tracks don't get disconnected by Deepgram
+      const ka = setInterval(() => {
+        if (!this.isOpen || !this.live) { clearInterval(ka); return }
+        try { this.live.keepAlive() } catch {}
+      }, 8000)
+      this.live!.once(LiveTranscriptionEvents.Close, () => clearInterval(ka))
     })
 
     this.live.on(LiveTranscriptionEvents.Transcript, (data) => {

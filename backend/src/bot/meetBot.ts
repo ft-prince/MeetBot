@@ -132,21 +132,24 @@ export class MeetBot {
 
     console.log(`[bot] Navigating to ${meetingUrl}`)
     await this.page.goto(meetingUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    console.log('[bot] Page loaded — waiting for Meet JS to settle')
     await this.page.waitForTimeout(3000)  // let Meet JS + account check fully settle
 
+    console.log('[bot] Starting pre-join flow')
     await this.handlePreJoin(displayName)
 
     if (this.ended) {
       const msg = this.blockReason
         ? `Bot blocked from joining: ${this.blockReason}. Re-run \`npx tsx bot-login.ts\` with an account that has access, or ask the host to admit guests.`
         : 'Bot was blocked from joining the meeting (no admit within 5 min — host never let the bot in)'
+      console.error(`[bot] Join failed: ${msg}`)
       opts.onError?.(new Error(msg))
       await this.stop()
       return
     }
 
     opts.onJoined?.()
-    console.log('[bot] Joined meeting as', displayName)
+    console.log(`[bot] Joined meeting as "${displayName}" — setting up post-join watchers`)
 
     await this.tryOpenPeoplePanel()
     this.pollParticipantNames(opts)
@@ -167,7 +170,11 @@ export class MeetBot {
     for (const sel of selectors) {
       try {
         const btn = await page.$(sel)
-        if (btn) { await btn.click(); console.log('[bot] Opened people panel via', sel); return }
+        if (btn && await btn.isVisible()) {
+          await btn.click()
+          console.log('[bot] Opened people panel via', sel)
+          return
+        }
       } catch {}
     }
     console.log('[bot] Could not open people panel — will scrape tiles instead')
@@ -237,30 +244,40 @@ export class MeetBot {
   // ── Stop ─────────────────────────────────────────────────────────────────
 
   async stop(): Promise<void> {
-    if (this.ended) return
-    this.ended = true
+    // Capture refs atomically before clearing. Null refs = already cleaned up.
+    // Do NOT guard on `this.ended` — internal watchers set that flag before calling
+    // stop(), which would cause the early-return to skip browser cleanup entirely,
+    // leaving zombie browsers that hold the persistent-profile lock.
+    const page = this.page
+    const context = this.context
+    const browser = this.browser
+    const wasPersistent = this.persistentContext
 
-    if (this.page) {
+    if (!page && !context && !browser) return
+
+    this.ended = true
+    this.page = null
+    this.context = null
+    this.browser = null
+
+    if (page) {
       try {
         for (const sel of ['[aria-label="Leave call"]', '[jsname="CQylAd"]', 'button:has-text("Leave")']) {
-          const btn = await this.page.$(sel)
-          if (btn) { await btn.click(); await this.page.waitForTimeout(800); break }
+          const btn = await page.$(sel)
+          if (btn) { await btn.click(); await page.waitForTimeout(800); break }
         }
       } catch {}
     }
 
     try {
-      if (this.persistentContext) {
+      if (wasPersistent) {
         // Close context only — keeps the profile intact for next run
-        await this.context?.close()
+        await context?.close()
       } else {
-        await this.browser?.close()
+        await browser?.close()
       }
     } catch {}
 
-    this.browser = null
-    this.context = null
-    this.page = null
     console.log('[bot] Browser closed')
   }
 
@@ -268,7 +285,9 @@ export class MeetBot {
 
   private async handlePreJoin(displayName: string): Promise<void> {
     const page = this.page!
-    await page.waitForTimeout(4000)
+    // Wait for the pre-join lobby to actually render instead of sleeping a fixed amount.
+    // Google Meet is a heavy SPA — DOM elements exist before they're interactive.
+    await this.waitForPreJoinUI(page)
     await this.trySetName(page, displayName)
     await this.tryMuteMic(page)
     await this.tryDisableCamera(page)
@@ -276,27 +295,90 @@ export class MeetBot {
     await this.waitForMeetingUI(page)
   }
 
+  // Wait until the pre-join screen has a visible interactive element (name field OR join button).
+  // Falls through after 30 s so the rest of the flow still runs.
+  private async waitForPreJoinUI(page: Page): Promise<void> {
+    const signals = [
+      'input[placeholder*="name" i]',
+      '[jsname="YPqjbf"]',
+      '[aria-label*="Join now" i]',
+      '[aria-label*="Ask to join" i]',
+      'button:has-text("Join now")',
+      'button:has-text("Ask to join")',
+    ]
+    const startMs = Date.now()
+    const TIMEOUT_MS = 30_000
+
+    while (Date.now() - startMs < TIMEOUT_MS) {
+      if (this.ended) return
+
+      if (await this.hasLeaveButton(page)) {
+        console.log('[bot] Already in meeting — skipping pre-join wait')
+        return
+      }
+
+      for (const sel of signals) {
+        try {
+          const el = await page.$(sel)
+          if (el && await el.isVisible()) {
+            console.log(`[bot] Pre-join UI ready via "${sel}" (+${Math.round((Date.now() - startMs) / 1000)}s)`)
+            return
+          }
+        } catch {}
+      }
+
+      const elapsed = Math.round((Date.now() - startMs) / 1000)
+      if (elapsed > 0 && elapsed % 5 === 0) {
+        console.log(`[bot] Waiting for pre-join UI (${elapsed}s)...`)
+      }
+      await page.waitForTimeout(500).catch(() => {})
+    }
+    console.warn('[bot] Pre-join UI not detected after 30s — proceeding anyway')
+  }
+
   private async trySetName(page: Page, name: string): Promise<void> {
     for (const sel of ['input[placeholder*="name" i]', '[jsname="YPqjbf"]', 'input[data-initial-value]']) {
       try {
         const el = await page.$(sel)
-        if (el) { await el.click({ clickCount: 3 }); await el.type(name, { delay: 50 }); console.log('[bot] Set display name'); return }
+        if (!el || !(await el.isVisible())) continue
+        // fill() is required for React controlled inputs: it fires the synthetic `input`
+        // event that React listens to. el.type() only fires keydown/keyup and leaves
+        // React's internal form state unchanged, so Meet submits the empty default name.
+        await el.click()
+        await el.fill(name)
+        const actual = await el.inputValue()
+        if (actual === name) {
+          console.log(`[bot] Display name set: "${name}"`)
+        } else {
+          console.warn(`[bot] Display name mismatch — expected "${name}", got "${actual}"`)
+        }
+        return
       } catch {}
     }
+    console.warn('[bot] Name field not found — joining without setting display name')
   }
 
   private async tryMuteMic(page: Page): Promise<void> {
     for (const sel of ['[data-is-muted="false"][aria-label*="microphone" i]', '[aria-label*="Turn off microphone" i]', '[jsname="BOHaEe"]']) {
-      try { const el = await page.$(sel); if (el) { await el.click(); return } } catch {}
+      try {
+        const el = await page.$(sel)
+        if (el && await el.isVisible()) { await el.click(); return }
+      } catch {}
     }
   }
 
   private async tryDisableCamera(page: Page): Promise<void> {
     for (const sel of ['[aria-label*="Turn off camera" i]', '[data-is-muted="false"][aria-label*="camera" i]', '[jsname="R3RXj"]']) {
-      try { const el = await page.$(sel); if (el) { await el.click(); return } } catch {}
+      try {
+        const el = await page.$(sel)
+        if (el && await el.isVisible()) { await el.click(); return }
+      } catch {}
     }
   }
 
+  // Retry clicking the join button for up to 30 s, only on elements that are
+  // both visible AND enabled. Previous code clicked DOM elements that existed
+  // but weren't interactive yet, causing a silent no-op.
   private async tryClickJoin(page: Page): Promise<void> {
     const selectors = [
       '[jsname="Qx7uuf"]',
@@ -305,17 +387,38 @@ export class MeetBot {
       'button:has-text("Join now")',
       'button:has-text("Ask to join")',
     ]
-    for (let i = 0; i < 20; i++) {
+    const startMs = Date.now()
+    const TIMEOUT_MS = 30_000
+
+    while (Date.now() - startMs < TIMEOUT_MS) {
       if (this.ended) return
       for (const sel of selectors) {
         try {
           const el = await page.$(sel)
-          if (el) { await el.click(); console.log('[bot] Clicked join button'); return }
+          if (!el) continue
+          const visible = await el.isVisible()
+          const enabled = await el.isEnabled()
+          if (visible && enabled) {
+            await el.click()
+            console.log(`[bot] Clicked join button via "${sel}" (+${Math.round((Date.now() - startMs) / 1000)}s)`)
+            return
+          }
         } catch {}
+      }
+      const elapsed = Math.round((Date.now() - startMs) / 1000)
+      if (elapsed > 0 && elapsed % 5 === 0) {
+        console.log(`[bot] Waiting for join button to be visible+enabled (${elapsed}s)...`)
       }
       await page.waitForTimeout(500).catch(() => {})
     }
-    console.warn('[bot] Could not find join button — may have auto-joined')
+    console.warn('[bot] Join button not found/interactive after 30s — may have auto-joined or landed in waiting room')
+  }
+
+  private async hasLeaveButton(page: Page): Promise<boolean> {
+    for (const sel of ['[aria-label="Leave call"]', '[aria-label*="leave call" i]', '[jsname="CQylAd"]']) {
+      try { if (await page.$(sel)) return true } catch {}
+    }
+    return false
   }
 
   private async waitForMeetingUI(page: Page): Promise<void> {
@@ -338,18 +441,6 @@ export class MeetBot {
       return false
     }
 
-    const hasLeaveButton = async (): Promise<boolean> => {
-      const leaveSelectors = [
-        '[aria-label="Leave call"]',
-        '[aria-label*="leave call" i]',
-        '[jsname="CQylAd"]',
-      ]
-      for (const sel of leaveSelectors) {
-        try { if (await page.$(sel)) return true } catch {}
-      }
-      return false
-    }
-
     for (let i = 0; i < 300; i++) {
       if (this.ended) return
 
@@ -358,7 +449,7 @@ export class MeetBot {
 
       try {
         // In meeting: leave button visible (most reliable)
-        if (await hasLeaveButton()) {
+        if (await this.hasLeaveButton(page)) {
           console.log('[bot] Meeting UI detected (leave button)'); return
         }
 

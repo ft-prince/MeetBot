@@ -9,7 +9,7 @@ services:
       - "5900:5900"  # VNC — only reachable when ENABLE_VNC=1
     environment:
       # Required — point these at your real services
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://ftprince@host.docker.internal/noteai}
       WHISPER_URL: ${WHISPER_URL:-ws://host.docker.internal:3002}
       GROQ_API_KEY: ${GROQ_API_KEY}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
