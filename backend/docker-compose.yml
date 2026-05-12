@@ -1,0 +1,29 @@
+services:
+  backend:
+    build: .
+    image: noteai-backend
+    container_name: noteai-backend
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+      - "5900:5900"  # VNC — only reachable when ENABLE_VNC=1
+    environment:
+      # Required — point these at your real services
+      DATABASE_URL: ${DATABASE_URL}
+      WHISPER_URL: ${WHISPER_URL:-ws://host.docker.internal:3002}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me}
+      # Flip to 1 when running bot-login.sh; leave 0 in production
+      ENABLE_VNC: ${ENABLE_VNC:-0}
+      VNC_PASSWORD: ${VNC_PASSWORD:-noteai}
+    volumes:
+      - bot-profile:/data/bot-profile
+    extra_hosts:
+      # Lets the container reach services running on the host (Postgres / whisper)
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  bot-profile:
