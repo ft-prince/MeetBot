@@ -151,6 +151,28 @@ export async function updateSpeakerName(
   );
 }
 
+export async function appendScreenShareEvent(
+  meetingId: string,
+  eventType: 'screenshare_start' | 'screenshare_end' | 'screenshare_update',
+  presenter: string | null,
+  ms: number,
+): Promise<void> {
+  // Append to metadata.screenshareEvents JSONB array. Idempotent — duplicates allowed
+  // since updates may fire; downstream consumers can dedupe by timestamp.
+  const entry = { type: eventType, presenter, ms };
+  await db.query(
+    `UPDATE meetings
+     SET metadata = jsonb_set(
+       COALESCE(metadata, '{}'::jsonb),
+       '{screenshareEvents}',
+       COALESCE(metadata->'screenshareEvents', '[]'::jsonb) || $1::jsonb,
+       true
+     )
+     WHERE id = $2`,
+    [JSON.stringify(entry), meetingId],
+  );
+}
+
 export async function logDomEvent(
   meetingId: string,
   speakerName: string,
