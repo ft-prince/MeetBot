@@ -8,11 +8,12 @@ import {
   endMeeting,
   saveSegment,
   saveSummary,
+  savePipelineResults,
   updateSpeakerName,
   logDomEvent,
   getMeetingTranscript,
 } from '../services/meetingService';
-import { generateSummary } from '../services/summaryService';
+import { runPipeline } from '../services/aiPipelineService';
 
 // One session per connected WebSocket (one per active meeting)
 interface Session {
@@ -383,26 +384,30 @@ export async function endBotSessionNoSummary(meetingCode: string): Promise<void>
 
 async function generateSummaryInBackground(meetingId: string, meetingCode: string): Promise<void> {
   try {
-    console.log(`[summary] Generating summary for ${meetingCode}...`);
+    console.log(`[pipeline] Running AI pipeline for ${meetingCode}…`);
     const segments = await getMeetingTranscript(meetingId);
     if (!segments || segments.length === 0) {
-      console.log(`[summary] No segments found for ${meetingCode}, skipping`);
+      console.log(`[pipeline] No segments found for ${meetingCode}, skipping`);
       return;
     }
-    const { summary, keyInsights, detailedRewrite, importantPoints } = await generateSummary(
+    const result = await runPipeline(
       segments.map((s: Record<string, unknown>) => ({
         speakerName: s.speaker_name as string | null,
         speakerLabel: s.speaker_label as string,
         text: s.text as string,
         startMs: s.start_ms as number,
+        endMs: s.end_ms as number,
       })),
-      meetingCode
+      meetingCode,
     );
-    if (summary) {
-      await saveSummary(meetingId, summary, keyInsights, detailedRewrite, importantPoints);
-      console.log(`[summary] Saved for ${meetingCode}`);
-    }
+    // Persist whatever we got — even partial results
+    await savePipelineResults(meetingId, result);
+    console.log(`[pipeline] Done for ${meetingCode} (${Object.values(result.status).filter(s => s === 'ok').length} modules ok)`);
   } catch (err) {
-    console.error(`[summary] Failed for ${meetingCode}:`, (err as Error).message);
+    console.error(`[pipeline] Unhandled error for ${meetingCode}:`, (err as Error).message);
+    // Even on a top-level crash, leave a row in the table — saveSummary fallback so UI shows something
+    try {
+      await saveSummary(meetingId, 'Analysis failed. The transcript is preserved.', [], '', []);
+    } catch {}
   }
 }
