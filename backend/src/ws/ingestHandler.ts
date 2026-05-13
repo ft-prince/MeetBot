@@ -11,6 +11,7 @@ import {
   savePipelineResults,
   updateSpeakerName,
   logDomEvent,
+  appendScreenShareEvent,
   getMeetingTranscript,
 } from '../services/meetingService';
 import { runPipeline } from '../services/aiPipelineService';
@@ -192,6 +193,17 @@ function handleControlMessage(session: Session, msg: Record<string, unknown>): v
 
   if (type === 'session_end') {
     session.correlator.closeAllEvents(Date.now());
+  }
+
+  if (type === 'screenshare_start' || type === 'screenshare_end' || type === 'screenshare_update') {
+    const presenter = (msg.presenter as string) || null;
+    const ms = (msg.startMs as number) || (msg.endMs as number) || (msg.ms as number) || Date.now();
+    console.log(`[session] ${type} ${presenter ? 'by ' + presenter : ''} at ${ms}`);
+    appendScreenShareEvent(session.meetingId, type, presenter, ms).catch(console.error);
+    // Notify any panel clients listening for live updates
+    for (const client of session.panelClients) {
+      try { client.send(JSON.stringify({ type, presenter, ms })); } catch {}
+    }
   }
 
   // When only one participant is known, auto-assign all unresolved SPEAKER_X to them

@@ -1,6 +1,6 @@
 # NoteAI — Backend
 
-Express + TypeScript service that runs the meeting bot, ingests per-speaker audio, brokers transcription via Whisper, persists everything to PostgreSQL, and generates AI summaries with Groq.
+Express + TypeScript service that runs the meeting bot, ingests per-speaker audio, brokers transcription via Deepgram, persists everything to PostgreSQL, runs a tiered AI analysis pipeline (Groq), schedules auto-launched meetings, and broadcasts live events over WebSocket.
 
 For the monorepo overview see [../README.md](../README.md). For the React dashboard see [../frontend/README.md](../frontend/README.md).
 
@@ -15,31 +15,45 @@ For the monorepo overview see [../README.md](../README.md). For the React dashbo
 5. [Running the App](#running-the-app)
 6. [Google OAuth Setup](#google-oauth-setup)
 7. [Database Setup](#database-setup)
-8. [Whisper Sidecar](#whisper-sidecar)
-9. [How It Works](#how-it-works)
-10. [API Reference](#api-reference)
-11. [Project Structure](#project-structure)
-12. [Troubleshooting](#troubleshooting)
+8. [Deepgram Transcription](#deepgram-transcription)
+9. [AI Pipeline](#ai-pipeline)
+10. [Speaker Identification](#speaker-identification)
+11. [Screen-share Detection](#screen-share-detection)
+12. [Scheduling](#scheduling)
+13. [API Reference](#api-reference)
+14. [Project Structure](#project-structure)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Architecture
 
 ```
-                     ┌──────────────────────────────────────────┐
-                     │  Express (port 8001)                     │
-                     │                                          │
-React frontend ───▶  │  /auth   Google OAuth                    │
-(5173 in dev,        │  /api    REST: meetings, calendar, bots  │  ──▶ PostgreSQL
-8001 in prod)        │  /panel  WS: live transcript events      │
-                     │                                          │
-                     │  MeetBot (Playwright/Chromium)           │
-                     │   └─ audioInjector.js                    │
-                     │      └─ per-track PCM ──▶ Whisper (3002) │
-                     └──────────────────────────────────────────┘
+                     ┌──────────────────────────────────────────────────┐
+                     │  Express (port 8001)                             │
+                     │                                                  │
+React frontend ───▶  │  /auth         Google OAuth                      │
+(5173 in dev,        │  /api          REST: meetings, scheduling, etc.  │  ──▶ PostgreSQL
+8001 in prod)        │  /panel        WS: live transcript / events      │
+                     │                                                  │
+                     │  Scheduler (every 30s) ─┬─▶ calendar_events       │
+                     │                          └─▶ scheduled_meetings   │
+                     │                              ▼                    │
+                     │  MeetBot (Playwright/Chrome)                      │
+                     │   └─ audioInjector.js                             │
+                     │      ├─ per-track PCM   ──▶ Deepgram nova-2       │
+                     │      ├─ DOM speaker observer (SSRC + co-occur)    │
+                     │      └─ screen-share detection (track + DOM)      │
+                     │                                                   │
+                     │  AI Pipeline (runs on meeting end)                │
+                     │   ├─ detectLanguage                                │
+                     │   ├─ runSummaryModule    (chunk → trim → keyword) │
+                     │   ├─ runActionItemsModule                          │
+                     │   ├─ runKeyQuestionsModule                         │
+                     │   ├─ runChaptersModule                             │
+                     │   └─ runSpeakerInsightsModule                      │
+                     └───────────────────────────────────────────────────┘
 ```
-
-The bot launches a real Chromium, navigates to the Meet URL, intercepts each WebRTC audio track via an injected script, and forwards raw 16 kHz Int16 PCM to a self-hosted Whisper WebSocket. Transcript segments flow back through a `SpeakerCorrelator` (which matches Whisper output to DOM speaker events) and are broadcast to any panel WebSocket clients listening for that meeting.
 
 ---
 
@@ -48,7 +62,7 @@ The bot launches a real Chromium, navigates to the Meet URL, intercepts each Web
 - **Node.js** 18+
 - **PostgreSQL** 14+
 - **Google Chrome** installed (Playwright uses the system `chrome` channel)
-- **Python 3.10+** with `whisperx` installed if you want to run the bundled Whisper sidecar (`whisper_service.py`)
+- **Deepgram API key** — sign up at [console.deepgram.com](https://console.deepgram.com)
 - **Groq API key** — free at [console.groq.com](https://console.groq.com)
 - **Google Cloud project** with OAuth 2.0 credentials and the Calendar API enabled
 
@@ -60,6 +74,14 @@ The bot launches a real Chromium, navigates to the Meet URL, intercepts each Web
 cd backend
 npm install
 ```
+
+Then (one-time) sign the bot into Google so it can join org-restricted meetings:
+
+```bash
+npx tsx bot-login.ts
+```
+
+This opens a real Chrome window. Sign in to a Google account that has access to the meetings you want to record, then close the window. The profile is saved to `~/.noteai/bot-profile` (Windows: `C:\Users\<you>\.noteai\bot-profile`) and reused on every bot launch.
 
 ---
 
@@ -79,13 +101,13 @@ cp .env.example .env
 | `GOOGLE_CLIENT_ID` | OAuth 2.0 client ID | `760653...apps.googleusercontent.com` |
 | `GOOGLE_CLIENT_SECRET` | OAuth 2.0 client secret | `GOCSPX-...` |
 | `GOOGLE_REDIRECT_URI` | Must exactly match the URI registered in Google Cloud Console | `http://localhost:8001/accounts/google/login/callback/` |
-| `GROQ_API_KEY` | Groq API key for AI summaries | `gsk_...` |
-| `WHISPER_URL` | WebSocket URL of the Whisper transcription server | `ws://localhost:3002` |
+| `DEEPGRAM_API_KEY` | Deepgram API key for real-time transcription | `dg_...` |
+| `GROQ_API_KEY` | Groq API key for AI pipeline | `gsk_...` |
 | `BOT_GOOGLE_EMAIL` | *(Optional)* Google account the bot signs in as | `bot@example.com` |
 | `BOT_GOOGLE_PASSWORD` | *(Optional)* Password for the bot account | |
-| `BOT_CHROME_PROFILE_DIR` | *(Optional)* Pre-authenticated Chrome profile path | `/tmp/noteai-bot-profile` |
+| `BOT_CHROME_PROFILE_DIR` | *(Optional)* Pre-authenticated Chrome profile path | `~/.noteai/bot-profile` (default) |
 
-Without `DATABASE_URL` the backend will still boot and the live dashboard will work, but transcripts and meetings will not be persisted.
+Without `DATABASE_URL` the backend will still boot and the live dashboard will work, but nothing will be persisted.
 
 ---
 
@@ -97,7 +119,7 @@ Without `DATABASE_URL` the backend will still boot and the live dashboard will w
 npm run dev
 ```
 
-The backend listens on `http://localhost:8001`. In this mode the React frontend should run separately on Vite's dev server — see [../frontend/README.md](../frontend/README.md).
+The backend listens on `http://localhost:8001`. The React frontend should run separately on Vite's dev server — see [../frontend/README.md](../frontend/README.md).
 
 ### Production-style (single port)
 
@@ -130,24 +152,26 @@ Open **http://localhost:8001**.
 
 > **Error: "Sign-in failed: invalid state"** — the `GOOGLE_REDIRECT_URI` in your `.env` does not match the URI registered in Google Cloud. They must be byte-identical, trailing slash included.
 
-When the React app is being served by Vite on port 5173, OAuth still completes through port 8001 (because that's the registered redirect target). After signing in, you'll land back on the backend; navigate to `http://localhost:5173` and the session cookie is shared on `localhost`.
+When the React app is being served by Vite on port 5173, OAuth still completes through port 8001 (because that's the registered redirect target). After signing in you'll land back on the backend; navigate to `http://localhost:5173` and the session cookie is shared on `localhost`.
 
 ---
 
 ## Database Setup
 
+Cross-platform migration (works identically on macOS, Linux, Windows):
+
 ```bash
-createdb noteai
-psql noteai < src/db/schema.sql
+npm run db:migrate
 ```
 
-The schema is idempotent — safe to re-run.
+This runs [`scripts/migrate.js`](scripts/migrate.js) — a small Node script that reads `DATABASE_URL` from `.env` and applies [`src/db/schema.sql`](src/db/schema.sql) using the `pg` client. The schema is idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`) — safe to re-run after every pull.
 
 | Table | Purpose |
 |---|---|
 | `users` | Google OAuth profiles + access/refresh tokens |
 | `session` | Express session store (managed by `connect-pg-simple`) |
-| `meetings` | Meeting records, including AI summary fields |
+| `meetings` | Meeting records + `summary`, `key_insights`, `metadata` (action items, chapters, speakers, screenshare events), `processing_status`, `language` |
+| `scheduled_meetings` | User-created scheduled meetings — title, meet_url, scheduled_for, auto_launch, status |
 | `calendar_events` | Synced Google Calendar events |
 | `transcript_segments` | Per-speaker transcript lines |
 | `speakers` | Speaker label ↔ name mapping per meeting |
@@ -155,52 +179,120 @@ The schema is idempotent — safe to re-run.
 
 ---
 
-## Whisper Sidecar
+## Deepgram Transcription
 
-Bundled in `whisper_service.py` — a WebSocket server that receives 16 kHz Int16 PCM and returns `{ type: "transcript", text, start_ms, end_ms, speaker, language }` messages.
+Real-time audio transcription via Deepgram's `nova-2` model. Each WebRTC audio track gets its own Deepgram WebSocket — one stream per participant, so we never have to disentangle mixed audio.
 
-```bash
-pip install whisperx
-python whisper_service.py
-# Listens on ws://localhost:3002
-```
+The client lives at [`src/ws/deepgramClient.ts`](src/ws/deepgramClient.ts) (imported with the legacy alias `WhisperClient` for backwards compatibility in [`ingestHandler.ts`](src/ws/ingestHandler.ts)).
 
-If Whisper is not running the bot still joins meetings and the dashboard still renders, but no transcripts will appear. The backend reconnects automatically when Whisper comes back online.
+If `DEEPGRAM_API_KEY` is missing the bot still joins meetings and the dashboard still renders, but no transcripts appear.
 
 ---
 
-## How It Works
+## AI Pipeline
 
-### 1. Bot joins the meeting
+After a meeting ends, [`aiPipelineService.runPipeline()`](src/services/aiPipelineService.ts) runs six independent modules **sequentially** (Groq free tier is 6000 TPM; parallel calls burst past it). Each module is isolated — failures in one don't block the others.
 
-1. Backend extracts the meeting code from the Meet URL (e.g. `abc-defg-hij`)
-2. `botManager.launch()` creates an ingest session, then `MeetBot` launches Chromium
-3. `audioInjector.js` is injected as an init script — it patches the WebRTC layer to intercept per-participant audio tracks
-4. The bot fills the display name, mutes mic/camera, and clicks "Join now"
+```
+detectLanguage()
+  ↓
+runSummaryModule()          ── summary + detailed rewrite + key insights + important points
+  ↓
+runActionItemsModule()      ── {task, owner, dueHint}[]
+  ↓
+runKeyQuestionsModule()     ── unresolved questions
+  ↓
+runChaptersModule()         ── timestamped topic chapters
+  ↓
+runSpeakerInsightsModule()  ── per-person contributions, ownership, collaboration
+```
 
-### 2. Live transcription
+### Per-module fallback chain
 
-For each participant audio track:
+```
+Module (e.g. summary)
+  │
+  ├─ Primary path           chunked single-shot, structured JSON, retry x4 with
+  │                         exponential backoff + Groq retry-hint parser
+  │                         ("try again in 950ms" honored verbatim)
+  │
+  ├─ Fallback 1             trimmed single-shot (12K char slice)
+  │
+  └─ Fallback 2             keyword extraction — pure JS, no LLM
+                            (top-frequency phrases, first 3 sentences)
+```
 
-- Raw PCM is forwarded over a per-track WebSocket to the Whisper sidecar
-- Whisper returns final transcript segments
-- `SpeakerCorrelator` matches segments to DOM speaker events (start/end times scraped from the Google Meet UI) to identify who said what
-- Final segments are saved to PostgreSQL and broadcast to every connected `/panel` WebSocket subscribed to that meeting
+Each module records its outcome in `meetings.processing_status`:
+- `ok` — primary succeeded
+- `partial` — fallback used or chunked merge incomplete
+- `failed` — all retries exhausted
+- `skipped` — no API key or insufficient transcript
 
-### 3. Meeting ends
+### Multilingual handling
 
-When the bot leaves or the user clicks **Stop**:
+[`detectLanguage()`](src/services/aiPipelineService.ts) classifies the transcript as `en` / `hi` / `hi-en` / etc. via a cheap small-token call. The detected code is passed to every subsequent prompt as a hint. Outputs are always English (so search and downstream consumers stay consistent), but the prompts faithfully paraphrase Hinglish or Hindi without losing meaning.
 
-1. All Whisper clients disconnect
-2. `ended_at` and `duration_ms` are written to the `meetings` row
-3. A `meeting.ended` event is broadcast on the panel WebSocket
-4. AI summary generation runs in the background (non-blocking)
+### Dynamic sizing
 
-### 4. AI summary
+No hardcoded bullet or sentence counts. Every prompt says:
 
-The full transcript is sent to Groq (`llama-3.1-8b-instant`) with a structured prompt. The response is parsed into four sections (detailed rewrite, executive summary, key insights, important points) and saved to the `meetings` row.
+> "Scale each list to what the transcript supports."
+> "Return as many chapters as the content needs — minimum 2, no upper limit."
 
-The prompt understands Hinglish (Hindi + English) input and always responds in English.
+For long transcripts the summary module chunks at 6K chars with 400-char overlap, then merges. Short transcripts go single-shot.
+
+---
+
+## Speaker Identification
+
+The bot needs to bind each WebRTC audio track to the right participant name. [`audioInjector.js`](src/bot/audioInjector.js) implements a three-signal approach inside the browser:
+
+1. **SSRC fast-path** — at every `checkSpeakers` tick, try `pc.getReceivers().getSynchronizationSources()` to find the SSRC, then look it up on a tile via `[data-ssrc]`. When this works, it's authoritative.
+2. **DOM "currently speaking" observer** — `tileIsSpeakingNow()` checks each `[data-participant-id]` tile for multiple signals (CSS class containing "speak", aria-label hints, animated audio-meter SVG/canvas).
+3. **Co-occurrence cache** — when an audio track is loud AND exactly one DOM tile is "speaking" at the same moment, increment a counter for that `{trackId, tileName}` pair. After **3 consecutive confirmations**, the binding is locked at `high` confidence and never overwritten.
+
+The previous index-based fallback (which caused name swaps when tiles reordered) has been removed. If no confident binding exists yet, the bot **emits nothing** rather than guess — the result is correct names slightly delayed (usually within the speaker's first few seconds of speech) instead of fast wrong names.
+
+Track-name bindings are reported to the backend via `window.noteAISendTrackInfo(trackId, name)`.
+
+---
+
+## Screen-share Detection
+
+Two independent signals, OR-combined, debounced at the state level so transient flips don't spam events:
+
+1. **WebRTC track signal** — `RTCPeerConnection.ontrack` for video tracks. Treated as screen-share if `contentHint` is "detail"/"text", or label mentions screen/window/tab/desktop/presentation, or it's a large (≥1280px) low-fps (≤15fps) feed.
+2. **DOM presenter scan** — `detectDomPresenter()` looks for aria-labels containing "presenting"/"is sharing", innerText `"X is presenting"` patterns, or a tile that's notably larger than other tiles (>3× the area of the second-largest).
+
+Events emitted:
+
+| Event | When | Persisted? |
+|---|---|---|
+| `screenshare_start` | First moment either signal fires | Appended to `meetings.metadata.screenshareEvents` |
+| `screenshare_end` | Both signals quiet | Appended |
+| `screenshare_update` | State unchanged but presenter name newly identified | Appended |
+
+All three are broadcast to any panel WebSocket clients listening for that meeting, so a future "Currently sharing" indicator in the UI can subscribe.
+
+---
+
+## Scheduling
+
+Two scheduling paths share the same in-process scheduler ([`schedulerService.ts`](src/services/schedulerService.ts)), polling every 30s:
+
+### 1. User-created scheduled meetings (`scheduled_meetings` table)
+- Created via `POST /api/meetings/schedule` from the **+ Schedule Meeting** modal
+- Fields: `title`, `meeting_url`, `scheduled_for`, `description?`, `auto_launch`, `status`, `meeting_id`
+- Auto-launches inside `[now - 30s, now + 60s]` window when `auto_launch=true` and `status='scheduled'`
+- Status transitions: `scheduled` → `launched` (after bot starts) or `cancelled` (user removes)
+- Manual override: `POST /api/meetings/scheduled/:id/start` launches immediately
+
+### 2. Google Calendar events (`calendar_events` table)
+- Pulled via `POST /api/calendar/sync`
+- Auto-joined N minutes before start (per-user `users.auto_join_minutes` setting)
+- Toggled per-event via `PATCH /api/calendar/events/:id/auto-join`
+
+Both paths converge on `botManager.launch(meetingUrl, userId)`, which returns the meeting **code** (e.g. `abc-defg-hij`). The DB UUID is resolved separately via [`getMeetingIdByCode`](src/services/meetingService.ts) and stored as the `meeting_id` FK on the scheduled / calendar row.
 
 ---
 
@@ -224,11 +316,20 @@ All endpoints except `GET /api/health` require an authenticated session.
 |---|---|---|
 | `GET` | `/api/meetings` | List the signed-in user's meetings |
 | `POST` | `/api/meetings/join` | Launch bot for a Meet URL |
-| `POST` | `/api/meetings/:code/stop` | Gracefully stop bot + generate summary |
-| `POST` | `/api/meetings/:code/exit` | Force-kill bot, no summary |
+| `POST` | `/api/meetings/:code/stop` | Gracefully stop bot + run AI pipeline |
+| `POST` | `/api/meetings/:code/exit` | Force-kill bot, no AI pipeline |
 | `GET` | `/api/meetings/:id/transcript` | Transcript segments for a meeting |
-| `GET` | `/api/meetings/:id/summary` | Summary + insights for a meeting |
+| `GET` | `/api/meetings/:id/summary` | Full pipeline output (summary, action items, chapters, speakers, language, processing_status) |
 | `GET` | `/api/bots/active` | List active bot meeting codes |
+
+### Scheduled Meetings
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/meetings/schedule` | Create a scheduled meeting `{title, meetingUrl, scheduledFor, description?, autoLaunch?}` |
+| `GET` | `/api/meetings/scheduled` | List non-cancelled scheduled meetings for the user |
+| `POST` | `/api/meetings/scheduled/:id/start` | Manual early launch |
+| `DELETE` | `/api/meetings/scheduled/:id` | Cancel (sets `status='cancelled'`) |
 
 ### Calendar
 
@@ -242,7 +343,7 @@ All endpoints except `GET /api/health` require an authenticated session.
 
 | Path | Direction | Description |
 |---|---|---|
-| `/panel?meetingId=<code>` | Server → Client | Live transcript events, bot status |
+| `/panel?meetingId=<code>` | Server → Client | Live transcript events, bot status, screen-share events |
 | `/audio?meetingId=<code>` | Client → Server | Raw PCM audio (legacy browser-extension path) |
 
 ---
@@ -251,33 +352,40 @@ All endpoints except `GET /api/health` require an authenticated session.
 
 ```
 backend/
+├── scripts/
+│   └── migrate.js              Cross-platform schema runner (used by db:migrate)
 ├── src/
 │   ├── bot/
-│   │   ├── meetBot.ts          Playwright bot — joins Meet, captures audio
-│   │   ├── botManager.ts       Manages active bot instances
-│   │   └── audioInjector.js    Injected into Chrome — WebRTC track intercept
+│   │   ├── meetBot.ts          Playwright bot — joins Meet, controls Chrome
+│   │   ├── botManager.ts       Active bot registry, launch/stop/exit
+│   │   └── audioInjector.js    Injected into Chrome — WebRTC intercept,
+│   │                           SSRC + co-occurrence speaker mapping,
+│   │                           screen-share detection
 │   ├── db/
 │   │   ├── client.ts           PostgreSQL pool
-│   │   └── schema.sql          Idempotent schema (run to initialise DB)
+│   │   └── schema.sql          Idempotent schema (run via npm run db:migrate)
 │   ├── routes/
 │   │   ├── auth.ts             Google OAuth + session endpoints
-│   │   ├── api.ts              Meeting + bot REST endpoints
+│   │   ├── api.ts              Meetings + scheduling + bot REST endpoints
 │   │   └── calendar.ts         Calendar sync + auto-join endpoints
 │   ├── services/
-│   │   ├── googleAuth.ts       OAuth client, token exchange, user upsert
-│   │   ├── calendarService.ts  Google Calendar API calls
-│   │   ├── meetingService.ts   DB queries for meetings + transcripts
-│   │   ├── schedulerService.ts Auto-join cron (checks every 60s)
-│   │   ├── speakerCorrelator.ts Matches Whisper segments → speaker names
-│   │   └── summaryService.ts   Groq AI summary generation
+│   │   ├── googleAuth.ts             OAuth client, token exchange, user upsert
+│   │   ├── calendarService.ts        Google Calendar API
+│   │   ├── meetingService.ts         DB queries; savePipelineResults,
+│   │   │                             appendScreenShareEvent, getMeetingIdByCode
+│   │   ├── scheduledMeetingService.ts CRUD for scheduled_meetings + due-window query
+│   │   ├── schedulerService.ts       Combined cron — calendar + scheduled, every 30s
+│   │   ├── speakerCorrelator.ts      Matches Deepgram segments ↔ speaker names
+│   │   ├── aiPipelineService.ts      Tiered AI pipeline (6 modules + fallbacks)
+│   │   └── summaryService.ts         Thin compat wrapper around runPipeline
 │   ├── types/
 │   │   └── session.d.ts        express-session type augmentation
 │   ├── ws/
-│   │   ├── ingestHandler.ts    WebSocket session management
-│   │   └── whisperClient.ts    WebSocket client for the Whisper sidecar
+│   │   ├── ingestHandler.ts    WS session management, event routing
+│   │   └── deepgramClient.ts   Deepgram nova-2 WebSocket client
 │   ├── config.ts               Reads .env into a typed config object
 │   └── index.ts                Express entry point
-├── whisper_service.py          Optional bundled Whisper sidecar
+├── bot-login.ts                One-time Google sign-in for the bot profile
 ├── frontend-vanilla/           Legacy fallback UI (used if React build is missing)
 ├── .env.example                Template for .env
 └── package.json
@@ -295,25 +403,37 @@ backend/
 GOOGLE_REDIRECT_URI=http://localhost:8001/accounts/google/login/callback/
 ```
 
-### Dashboard shows no data after sign-in
-
-1. Confirm the backend is running on 8001: `curl http://localhost:8001/api/health` should return `{ "ok": true }`
-2. In DevTools → Network, look at `/auth/me`. A `401` means the session cookie was not set — usually a redirect URI mismatch as above.
-
 ### Bot fails to join the meeting
 
 - Ensure Google Chrome is installed (Playwright uses the system `chrome` channel)
-- For org-restricted meetings, configure `BOT_CHROME_PROFILE_DIR` with a pre-signed-in profile
+- For org-restricted meetings, run `npx tsx bot-login.ts` once to seed a signed-in profile
 - Inspect backend logs for `[bot]` lines to see which step failed
+- "You can't join this video call" → the bot account doesn't have access. Sign into a different Google account via `bot-login.ts`, or ask the host to admit guests.
 
-### No AI summary generated
+### Failed to start scheduled meeting
+
+The endpoint logs the real error to the backend terminal (look for `[api] manual start error:`). Most common cause: schema not migrated — re-run `npm run db:migrate`.
+
+### No AI pipeline output / modules all `failed`
 
 - Confirm `GROQ_API_KEY` is set
-- Watch for `[summary]` lines in backend logs after the meeting ends
-- The transcript must have at least 100 characters of text for summary generation to run
+- Watch for `[ai]` lines in logs after the meeting ends. Retries show as `attempt 1/4 failed (server hint: 950ms). Retrying in 950ms…`
+- Pipeline runs **sequentially** with a 1.5s pause between modules to stay under Groq's 6000 TPM free-tier limit. If you're still hitting limits, upgrade to Groq's Dev Tier or reduce `MAX_TRANSCRIPT_CHARS_PER_CALL` in [`aiPipelineService.ts`](src/services/aiPipelineService.ts).
+
+### Wrong speaker names in transcripts
+
+The identification logic (SSRC + co-occurrence) takes 3 confirmations before locking a name. Before that, segments may show "Unknown" or use a `medium`-confidence tentative name. Once locked, names won't swap. If they swap *after* locking, please file an issue with the backend log — the lock was supposed to be permanent.
+
+### Screen-share not detected
+
+Two independent signals are used; one usually fires even when Meet renames DOM classes. Check the backend log for `[NoteAI] screen-share STARTED`. If neither signal fires, Google may have changed both the track contentHint and the aria-label pattern — open `audioInjector.js` and inspect `detectDomPresenter()` / `noteVideoTrack()`.
 
 ### Calendar sync returns no events
 
 - Enable the **Google Calendar API** in your Google Cloud project
 - Re-authenticate (sign out, sign back in) to refresh the token with the Calendar scope
 - Only events that have a Google Meet link and a future start time are synced
+
+### `npm run db:migrate` says `DATABASE_URL not set`
+
+The migration script uses `dotenv` to load `.env`. Confirm `backend/.env` exists and contains `DATABASE_URL=postgres://…`. If you're running the script from a different directory, make sure your cwd is `backend/`.
