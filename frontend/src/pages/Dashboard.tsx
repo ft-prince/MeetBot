@@ -2,11 +2,16 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Topbar } from '../components/Topbar'
 import { Pill } from '../components/Pill'
+import { CreateMeetingModal } from '../components/CreateMeetingModal'
 import { useAuth } from '../context/AuthContext'
 import { useLiveMeetings } from '../hooks/useLiveMeetings'
 import { api } from '../lib/api'
 import { fmtDate, fmtDuration, fmtTimeOfDay, timeUntil } from '../lib/format'
-import type { CalendarEvent, MeetingRow } from '../lib/types'
+import type { CalendarEvent, MeetingRow, ScheduledMeeting } from '../lib/types'
+
+type UpcomingItem =
+  | { kind: 'calendar'; id: string; title: string; startTime: string; meetingId: string | null }
+  | { kind: 'scheduled'; id: string; title: string; startTime: string; scheduled: ScheduledMeeting }
 
 export function Dashboard() {
   const { user } = useAuth()
@@ -15,10 +20,13 @@ export function Dashboard() {
 
   const [meetings, setMeetings] = useState<MeetingRow[]>([])
   const [events, setEvents] = useState<CalendarEvent[]>([])
+  const [scheduled, setScheduled] = useState<ScheduledMeeting[]>([])
   const [url, setUrl] = useState("")
   const [joining, setJoining] = useState(false)
   const [joinError, setJoinError] = useState<string | null>(null)
   const [loadingMeetings, setLoadingMeetings] = useState(true)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [startingId, setStartingId] = useState<string | null>(null)
 
   const load = async () => {
     setLoadingMeetings(true)
@@ -29,6 +37,12 @@ export function Dashboard() {
       // non-fatal
     } finally {
       setLoadingMeetings(false)
+    }
+    try {
+      const { scheduled: sList } = await api.listScheduledMeetings()
+      setScheduled(sList)
+    } catch {
+      // non-fatal — endpoint may 401 before login
     }
     if (user) {
       try {
@@ -41,20 +55,61 @@ export function Dashboard() {
   useEffect(() => { load() }, [user]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const stats = useMemo(() => {
+    const weekAgo = Date.now() - 7 * 86_400_000
     const completed = meetings.filter(m => m.ended_at).length
     const live = meetings.filter(m => !m.ended_at).length
     const summarised = meetings.filter(m => m.has_summary).length
+    const thisWeek = meetings.filter(m => new Date(m.started_at).getTime() >= weekAgo).length
     const totalMs = meetings.reduce((s, m) => s + (m.duration_ms || 0), 0)
-    return { total: meetings.length, completed, live, summarised, hours: (totalMs / 3_600_000).toFixed(1) }
-  }, [meetings])
+    const avgMs = completed > 0 ? Math.round(totalMs / completed) : 0
+    const upcomingCount = scheduled.filter(s => s.status === 'scheduled' && new Date(s.scheduledFor).getTime() > Date.now()).length
+    return {
+      total: meetings.length,
+      completed,
+      live,
+      summarised,
+      thisWeek,
+      hours: (totalMs / 3_600_000).toFixed(1),
+      avgMs,
+      upcomingCount,
+    }
+  }, [meetings, scheduled])
 
-  const upcoming = useMemo(() => {
+  const upcoming = useMemo<UpcomingItem[]>(() => {
     const now = Date.now()
-    return events
+    const fromCalendar: UpcomingItem[] = events
       .filter(e => new Date(e.startTime).getTime() > now)
+      .map(e => ({ kind: 'calendar', id: e.id, title: e.title, startTime: e.startTime, meetingId: e.meetingId }))
+    const fromScheduled: UpcomingItem[] = scheduled
+      .filter(s => s.status === 'scheduled' && new Date(s.scheduledFor).getTime() > now - 60_000)
+      .map(s => ({ kind: 'scheduled', id: s.id, title: s.title, startTime: s.scheduledFor, scheduled: s }))
+    return [...fromCalendar, ...fromScheduled]
       .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
-      .slice(0, 5)
-  }, [events])
+      .slice(0, 6)
+  }, [events, scheduled])
+
+  const startScheduled = async (id: string) => {
+    setStartingId(id)
+    try {
+      const { meetingId } = await api.startScheduledMeeting(id)
+      startLive(meetingId)
+      navigate('/live')
+    } catch (err) {
+      alert((err as Error).message)
+    } finally {
+      setStartingId(null)
+    }
+  }
+
+  const cancelScheduled = async (id: string) => {
+    if (!confirm('Cancel this scheduled meeting?')) return
+    try {
+      await api.cancelScheduledMeeting(id)
+      load()
+    } catch (err) {
+      alert((err as Error).message)
+    }
+  }
 
   const recent = useMemo(() => meetings.filter(m => m.ended_at).slice(0, 10), [meetings])
 
@@ -95,15 +150,20 @@ export function Dashboard() {
           <p className="text-sm text-muted">Here's what's happening with your meetings.</p>
         </div>
 
-        {/* Quick Join */}
+        {/* Quick Join + Schedule */}
         <div className="card p-5 mb-6">
-          <div className="text-sm font-semibold mb-3 flex items-center gap-2">
-            <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-              <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
-            </svg>
-            Quick Join
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-semibold flex items-center gap-2">
+              <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+              Quick Join
+            </div>
+            <button onClick={() => setModalOpen(true)} className="btn btn-secondary btn-sm">
+              + Schedule Meeting
+            </button>
           </div>
           <div className="flex flex-col sm:flex-row gap-2.5">
             <input
@@ -125,10 +185,14 @@ export function Dashboard() {
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <StatCard label="Total Meetings" value={stats.total} sub={stats.completed + " completed"} />
+          <StatCard label="Total Meetings" value={stats.total} sub={stats.thisWeek + " this week"} />
           <StatCard label="Live Now" value={stats.live} sub={(stats.live !== 1 ? "active recordings" : "active recording")} valueClass={stats.live > 0 ? "text-success" : ""} />
-          <StatCard label="AI Summaries" value={stats.summarised} sub="generated" valueClass="text-accent" />
-          <StatCard label="Hours Recorded" value={stats.hours} sub="total recording time" />
+          <StatCard label="AI Summaries" value={stats.summarised} sub={stats.total ? Math.round((stats.summarised / stats.total) * 100) + "% complete" : "none yet"} valueClass="text-accent" />
+          <StatCard label="Hours Recorded" value={stats.hours} sub={"avg " + fmtDuration(stats.avgMs)} />
+          <StatCard label="Upcoming Scheduled" value={stats.upcomingCount} sub={stats.upcomingCount === 1 ? "meeting" : "meetings"} />
+          <StatCard label="Completed" value={stats.completed} sub="all-time" />
+          <StatCard label="Avg Length" value={fmtDuration(stats.avgMs)} sub="per meeting" />
+          <StatCard label="Engagement" value={stats.total ? Math.round((stats.summarised / Math.max(1, stats.total)) * 100) + "%" : "—"} sub="summary rate" valueClass="text-accent" />
         </div>
 
         {/* Two-column panels */}
@@ -137,29 +201,73 @@ export function Dashboard() {
             title={<span className="flex items-center gap-1.5"><CalendarIcon />Upcoming Meetings</span>}
             action={user && <button onClick={async () => { await api.syncCalendar(); load() }} className="btn btn-secondary btn-sm">Sync</button>}
           >
-            {!user ? (
+            {upcoming.length === 0 ? (
               <Empty>
-                <a href="/auth/google" className="text-accent font-semibold">Connect Google</a>
-                <br />
-                <span className="mt-1 block">to see upcoming meetings</span>
+                {!user ? (
+                  <>
+                    No scheduled meetings yet.
+                    <br />
+                    <span className="block mt-2">
+                      <button onClick={() => setModalOpen(true)} className="btn btn-secondary btn-sm">+ Schedule one</button>
+                      <span className="text-muted mx-2">or</span>
+                      <a href="/auth/google" className="text-accent font-semibold">Connect Google</a>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    No upcoming meetings found.
+                    <br />
+                    <span className="block mt-2 flex items-center justify-center gap-2">
+                      <button onClick={() => setModalOpen(true)} className="btn btn-primary btn-sm">+ Schedule</button>
+                      <button onClick={async () => { await api.syncCalendar(); load() }} className="btn btn-secondary btn-sm">Sync Calendar</button>
+                    </span>
+                  </>
+                )}
               </Empty>
-            ) : upcoming.length === 0 ? (
-              <Empty>
-                No upcoming meetings found.
-                <br />
-                <button onClick={async () => { await api.syncCalendar(); load() }} className="btn btn-secondary btn-sm mt-3">Sync Calendar</button>
-              </Empty>
-            ) : upcoming.map(ev => {
-              const evStart = new Date(ev.startTime)
+            ) : upcoming.map(item => {
+              const evStart = new Date(item.startTime)
+              if (item.kind === 'scheduled') {
+                const isStarting = startingId === item.id
+                return (
+                  <DashItem
+                    key={'s-' + item.id}
+                    icon={<ScheduledIcon />}
+                    title={item.title}
+                    sub={fmtDate(evStart) + " · " + fmtTimeOfDay(evStart) + (item.scheduled.autoLaunch ? " · auto-launch" : "")}
+                    right={
+                      <div className="flex items-center gap-1.5">
+                        <Pill variant="pending">{timeUntil(evStart)}</Pill>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); startScheduled(item.id) }}
+                          disabled={isStarting}
+                          className="btn btn-primary btn-sm"
+                        >
+                          {isStarting ? "Starting…" : "Start"}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); cancelScheduled(item.id) }}
+                          className="text-muted hover:text-danger p-1 rounded transition-colors"
+                          aria-label="Cancel"
+                          title="Cancel"
+                        >
+                          <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                        </button>
+                      </div>
+                    }
+                  />
+                )
+              }
               return (
                 <DashItem
-                  key={ev.id}
+                  key={'c-' + item.id}
                   icon={<CalendarIcon />}
-                  title={ev.title}
+                  title={item.title}
                   sub={fmtDate(evStart) + " · " + fmtTimeOfDay(evStart)}
                   right={<Pill variant="pending">{timeUntil(evStart)}</Pill>}
                   onClick={() => {
-                    if (ev.meetingId) navigate("/meetings/" + ev.meetingId)
+                    if (item.meetingId) navigate("/meetings/" + item.meetingId)
                     else navigate("/calendar")
                   }}
                 />
@@ -193,7 +301,23 @@ export function Dashboard() {
           </Panel>
         </div>
       </div>
+      <CreateMeetingModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onCreated={load}
+      />
     </>
+  )
+}
+
+function ScheduledIcon() {
+  return (
+    <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-accent-light">
+      <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" />
+        <polyline points="12 6 12 12 16 14" />
+      </svg>
+    </div>
   )
 }
 

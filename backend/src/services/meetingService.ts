@@ -1,6 +1,7 @@
 import { db } from '../db/client';
 import { v4 as uuidv4 } from 'uuid';
 import type { IdentifiedSegment } from './speakerCorrelator';
+import type { PipelineResult } from './aiPipelineService';
 
 export interface Meeting {
   id: string;
@@ -53,7 +54,8 @@ export async function saveSummary(
 
 export async function getMeetingSummary(meetingId: string, userId?: string) {
   const result = await db.query(
-    `SELECT id, meeting_code, title, summary, key_insights, started_at, ended_at, duration_ms, user_id, metadata
+    `SELECT id, meeting_code, title, summary, key_insights, started_at, ended_at, duration_ms,
+            user_id, metadata, processing_status, language
      FROM meetings WHERE id = $1`,
     [meetingId]
   );
@@ -69,10 +71,48 @@ export async function getMeetingSummary(meetingId: string, userId?: string) {
     keyInsights: row.key_insights || [],
     detailedRewrite: (meta.detailedRewrite as string) || '',
     importantPoints: (meta.importantPoints as string[]) || [],
+    actionItems: (meta.actionItems as unknown[]) || [],
+    keyQuestions: (meta.keyQuestions as string[]) || [],
+    chapters: (meta.chapters as unknown[]) || [],
+    speakerInsights: (meta.speakerInsights as unknown[]) || [],
+    processingStatus: row.processing_status || {},
+    language: row.language || null,
     startedAt: row.started_at,
     endedAt: row.ended_at,
     durationMs: row.duration_ms,
   };
+}
+
+export async function savePipelineResults(
+  meetingId: string,
+  result: PipelineResult
+): Promise<void> {
+  const metadataPatch = {
+    detailedRewrite: result.detailedRewrite,
+    importantPoints: result.importantPoints,
+    actionItems: result.actionItems,
+    keyQuestions: result.keyQuestions,
+    chapters: result.chapters,
+    speakerInsights: result.speakerInsights,
+  };
+  await db.query(
+    `UPDATE meetings
+     SET summary = $1,
+         key_insights = $2,
+         metadata = metadata || $3::jsonb,
+         processing_status = $4::jsonb,
+         language = $5
+     WHERE id = $6`,
+    [
+      result.summary,
+      JSON.stringify(result.keyInsights),
+      JSON.stringify(metadataPatch),
+      JSON.stringify(result.status),
+      result.language,
+      meetingId,
+    ]
+  );
+  console.log(`[meeting] Pipeline results saved for ${meetingId} (status: ${JSON.stringify(result.status)})`);
 }
 
 export async function saveSegment(
@@ -140,6 +180,31 @@ export async function getMeetingTranscript(meetingId: string, userId?: string) {
     [meetingId]
   );
   return result.rows;
+}
+
+/**
+ * Resolve the DB UUID of the most recent meeting matching a code + user.
+ * Used when callers only know the meeting code (e.g. after `botManager.launch`
+ * which returns the code, not the UUID).
+ */
+export async function getMeetingIdByCode(
+  meetingCode: string,
+  userId?: string,
+): Promise<string | null> {
+  const result = userId
+    ? await db.query(
+        `SELECT id FROM meetings
+         WHERE meeting_code = $1 AND user_id = $2
+         ORDER BY started_at DESC LIMIT 1`,
+        [meetingCode, userId],
+      )
+    : await db.query(
+        `SELECT id FROM meetings
+         WHERE meeting_code = $1
+         ORDER BY started_at DESC LIMIT 1`,
+        [meetingCode],
+      );
+  return result.rows[0]?.id ?? null;
 }
 
 export async function listMeetings(userId: string) {

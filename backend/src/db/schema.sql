@@ -38,8 +38,14 @@ CREATE TABLE IF NOT EXISTS meetings (
   duration_ms      INTEGER,
   summary          TEXT,              -- AI-generated summary
   key_insights     JSONB DEFAULT '[]', -- AI-generated bullet points
-  metadata         JSONB DEFAULT '{}'
+  metadata         JSONB DEFAULT '{}', -- rich pipeline outputs (rewrite, action_items, chapters, etc.)
+  processing_status JSONB DEFAULT '{}',-- per-module status: { summary:'ok', actionItems:'failed', ... }
+  language         TEXT                 -- detected language code (e.g. 'en', 'hi', 'hi-en')
 );
+
+-- Idempotent column adds for existing installations
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS processing_status JSONB DEFAULT '{}';
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS language TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_meetings_code    ON meetings(meeting_code);
 CREATE INDEX IF NOT EXISTS idx_meetings_started ON meetings(started_at DESC);
@@ -62,6 +68,27 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_calendar_user_time ON calendar_events(user_id, start_time);
+
+-- ── Scheduled Meetings (user-created via "Schedule Meeting") ──────────────────
+-- Separate from `meetings` so we don't pollute that table with rows that have no
+-- recording. When the bot launches (auto or manual), a row is inserted into
+-- `meetings` and linked back here via `meeting_id`.
+CREATE TABLE IF NOT EXISTS scheduled_meetings (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title           TEXT NOT NULL,
+  meeting_url     TEXT NOT NULL,
+  scheduled_for   TIMESTAMPTZ NOT NULL,
+  description     TEXT,
+  auto_launch     BOOLEAN NOT NULL DEFAULT true,
+  status          TEXT NOT NULL DEFAULT 'scheduled'
+                   CHECK (status IN ('scheduled', 'launched', 'cancelled')),
+  meeting_id      UUID REFERENCES meetings(id) ON DELETE SET NULL,
+  created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_user_time ON scheduled_meetings(user_id, scheduled_for);
+CREATE INDEX IF NOT EXISTS idx_scheduled_status    ON scheduled_meetings(status, scheduled_for);
 
 -- ── Speakers ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS speakers (
