@@ -1,4 +1,4 @@
-import type { CalendarEvent, MeetingRow, MeetingSummary, TranscriptSegment, User } from './types'
+import type { CalendarEvent, MeetingRow, MeetingSummary, ScheduledMeeting, ScheduleInput, TranscriptSegment, User } from './types'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: 'include', ...init })
@@ -36,6 +36,20 @@ export const api = {
   exitMeeting: (code: string) =>
     fetch(`/api/meetings/${code}/exit`, { method: 'POST', credentials: 'include' }),
   activeBots: () => req<{ active: string[] }>('/api/bots/active'),
+
+  // Scheduled Meetings
+  scheduleMeeting: (input: ScheduleInput) =>
+    req<{ scheduledMeeting: ScheduledMeeting }>('/api/meetings/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }),
+  listScheduledMeetings: () =>
+    req<{ scheduled: ScheduledMeeting[] }>('/api/meetings/scheduled'),
+  cancelScheduledMeeting: (id: string) =>
+    req<{ ok: true }>(`/api/meetings/scheduled/${id}`, { method: 'DELETE' }),
+  startScheduledMeeting: (id: string) =>
+    req<{ meetingId: string }>(`/api/meetings/scheduled/${id}/start`, { method: 'POST' }),
 
   // Calendar
   listEvents: () => req<{ events: CalendarEvent[] }>('/api/calendar/events'),

@@ -16,6 +16,38 @@ export interface MeetingRow {
   has_summary: boolean
 }
 
+export type ModuleStatus = 'ok' | 'partial' | 'failed' | 'skipped'
+
+export interface ProcessingStatus {
+  language?: ModuleStatus
+  summary?: ModuleStatus
+  actionItems?: ModuleStatus
+  insights?: ModuleStatus
+  chapters?: ModuleStatus
+  speakers?: ModuleStatus
+  questions?: ModuleStatus
+}
+
+export interface ActionItem {
+  task: string
+  owner: string | null
+  dueHint: string | null
+}
+
+export interface Chapter {
+  title: string
+  startMs: number
+  endMs: number
+  summary: string
+}
+
+export interface SpeakerInsight {
+  name: string
+  contributions: string[]
+  ownership: string[]
+  collaboration: string[]
+}
+
 export interface MeetingSummary {
   id: string
   meetingCode: string
@@ -24,6 +56,12 @@ export interface MeetingSummary {
   keyInsights: string[]
   detailedRewrite: string | null
   importantPoints: string[]
+  actionItems: ActionItem[]
+  keyQuestions: string[]
+  chapters: Chapter[]
+  speakerInsights: SpeakerInsight[]
+  processingStatus: ProcessingStatus
+  language: string | null
   startedAt: string
   endedAt: string | null
   durationMs: number | null
@@ -37,6 +75,26 @@ export interface TranscriptSegment {
   start_ms: number
   end_ms: number
   confidence?: number
+}
+
+export interface ScheduledMeeting {
+  id: string
+  title: string
+  meetingUrl: string
+  scheduledFor: string
+  description: string | null
+  autoLaunch: boolean
+  status: 'scheduled' | 'launched' | 'cancelled'
+  meetingId: string | null
+  createdAt: string
+}
+
+export interface ScheduleInput {
+  title: string
+  meetingUrl: string
+  scheduledFor: string
+  description?: string
+  autoLaunch?: boolean
 }
 
 export interface CalendarEvent {
