@@ -1,4 +1,5 @@
 import { MeetBot } from './meetBot';
+import { ZoomBot } from './zoomBot';
 import {
   broadcastToMeeting,
   createBotSession,
@@ -9,11 +10,20 @@ import {
   setTrackName,
 } from '../ws/ingestHandler';
 
-const activeBots = new Map<string, MeetBot>();
+const activeBots = new Map<string, MeetBot | ZoomBot>();
+
+function isZoomUrl(url: string): boolean {
+  return /zoom\.us\//i.test(url);
+}
 
 function extractMeetingId(url: string): string {
-  const m = url.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
-  return m ? m[1] : `bot-${Date.now()}`;
+  // Zoom: zoom.us/j/1234567890 or zoom.us/wc/1234567890/join
+  const zoomMatch = url.match(/\/(?:j|wc)\/(\d{9,11})/);
+  if (zoomMatch) return `zoom-${zoomMatch[1]}`;
+
+  // Google Meet: meet.google.com/xxx-xxxx-xxx
+  const meetMatch = url.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
+  return meetMatch ? meetMatch[1] : `bot-${Date.now()}`;
 }
 
 export const botManager = {
@@ -21,7 +31,7 @@ export const botManager = {
     const meetingId = extractMeetingId(meetingUrl);
     if (activeBots.has(meetingId)) return meetingId;
 
-    const bot = new MeetBot();
+    const bot = isZoomUrl(meetingUrl) ? new ZoomBot() : new MeetBot();
     activeBots.set(meetingId, bot);
 
     // Create the ingest session before bot joins so it's ready to receive audio

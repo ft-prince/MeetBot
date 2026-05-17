@@ -87,15 +87,14 @@ export class SpeakerCorrelator {
 
   // Register a known participant — if only one speaker label exists, auto-assign
   registerParticipant(name: string): void {
-    if (this.labelToName.has('SPEAKER_0') && this.labelToName.get('SPEAKER_0') !== name) return
+    if ([...this.labelToName.values()].includes(name)) return
     const unlabelledSpeakers = [...new Set(
       this.unresolvedSegments.map(s => s.speakerLabel)
-    )]
-    // If only one unknown speaker label exists, they must be this participant
-    if (unlabelledSpeakers.length === 1 && !this.labelToName.has(unlabelledSpeakers[0])) {
+    )].filter(label => !this.labelToName.has(label))
+    if (unlabelledSpeakers.length === 1) {
       const label = unlabelledSpeakers[0]
       this.labelToName.set(label, name)
-      console.log(`[correlator] Auto-assigned ${label} → "${name}" (only participant)`)
+      console.log(`[correlator] Auto-assigned ${label} → "${name}" (only unresolved speaker)`)
       this.onSpeakerIdentified?.(label, name)
       this.resolveBacklog(label, name)
     }

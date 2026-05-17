@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc && cp src/bot/audioInjector.js dist/bot/audioInjector.js",
     "start": "node dist/index.js",
-    "db:migrate": "psql $DATABASE_URL -f src/db/schema.sql"
+    "db:migrate": "node scripts/migrate.js"
   },
   "dependencies": {
     "@deepgram/sdk": "^3.9.0",

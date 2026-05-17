@@ -18,8 +18,10 @@ router.use((req: Request, res: Response, next) => {
 router.post('/meetings/join', async (req: Request, res: Response) => {
   const { meetingUrl } = req.body as { meetingUrl?: string };
 
-  if (!meetingUrl || !meetingUrl.includes('meet.google.com')) {
-    res.status(400).json({ error: 'Invalid Google Meet URL' });
+  const isGoogleMeet = meetingUrl?.includes('meet.google.com');
+  const isZoom = meetingUrl?.match(/zoom\.us\/j\/\d+/i);
+  if (!meetingUrl || (!isGoogleMeet && !isZoom)) {
+    res.status(400).json({ error: 'Invalid meeting URL — must be a Google Meet or Zoom link' });
     return;
   }
 

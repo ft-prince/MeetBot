@@ -11,6 +11,7 @@ export class DeepgramClient {
   private isOpen = false
   private shouldReconnect = true
   private audioQueue: Buffer[] = []
+  private firstAudioWallMs: number | null = null
 
   constructor(
     private readonly onTranscript: OnTranscriptCallback,
@@ -24,6 +25,9 @@ export class DeepgramClient {
 
   sendAudio(chunk: Buffer | ArrayBuffer): void {
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    // Anchor wall-clock time to the first audio chunk so we can translate
+    // Deepgram's stream-relative timestamps into Date.now()-compatible ms.
+    if (this.firstAudioWallMs == null) this.firstAudioWallMs = Date.now()
     if (!this.isOpen || !this.live) {
       this.audioQueue.push(buf)
       return
@@ -34,6 +38,7 @@ export class DeepgramClient {
   disconnect(): void {
     this.shouldReconnect = false
     this.isOpen = false
+    this.firstAudioWallMs = null
     try { this.live?.finish() } catch {}
     this.live = null
   }

@@ -8,11 +8,13 @@ import {
   endMeeting,
   saveSegment,
   saveSummary,
+  savePipelineResults,
   updateSpeakerName,
   logDomEvent,
+  appendScreenShareEvent,
   getMeetingTranscript,
 } from '../services/meetingService';
-import { generateSummary } from '../services/summaryService';
+import { runPipeline } from '../services/aiPipelineService';
 
 // One session per connected WebSocket (one per active meeting)
 interface Session {
@@ -193,6 +195,17 @@ function handleControlMessage(session: Session, msg: Record<string, unknown>): v
     session.correlator.closeAllEvents(Date.now());
   }
 
+  if (type === 'screenshare_start' || type === 'screenshare_end' || type === 'screenshare_update') {
+    const presenter = (msg.presenter as string) || null;
+    const ms = (msg.startMs as number) || (msg.endMs as number) || (msg.ms as number) || Date.now();
+    console.log(`[session] ${type} ${presenter ? 'by ' + presenter : ''} at ${ms}`);
+    appendScreenShareEvent(session.meetingId, type, presenter, ms).catch(console.error);
+    // Notify any panel clients listening for live updates
+    for (const client of session.panelClients) {
+      try { client.send(JSON.stringify({ type, presenter, ms })); } catch {}
+    }
+  }
+
   // When only one participant is known, auto-assign all unresolved SPEAKER_X to them
   if (type === 'participant_known') {
     const name = msg.name as string;
@@ -301,17 +314,20 @@ export function forwardTrackAudio(meetingCode: string, chunk: Buffer, trackId: s
   if (!session) return;
 
   if (!session.trackWhispers.has(trackId)) {
+    const isMixed = trackId.startsWith('mixed');
     const speakerName = () => session.trackNames.get(trackId) ?? null;
 
     const w = new WhisperClient(
       (segment, isFinal) => {
-        const name = speakerName();
-        const identified = { ...segment, speakerName: name, speakerLabel: trackId };
+        const identified = isMixed
+          ? session.correlator.correlate(segment)
+          : { ...segment, speakerName: speakerName(), speakerLabel: trackId };
+
         broadcastToPanel(session.panelClients, {
           type: isFinal ? 'transcript.final' : 'transcript.interim',
-          segmentId:   identified.segmentId,
-          speakerLabel: trackId,
-          speakerName:  name,
+          segmentId:    identified.segmentId,
+          speakerLabel: identified.speakerLabel,
+          speakerName:  identified.speakerName,
           text:         identified.text,
           startMs:      identified.startMs,
           endMs:        identified.endMs,
@@ -383,26 +399,30 @@ export async function endBotSessionNoSummary(meetingCode: string): Promise<void>
 
 async function generateSummaryInBackground(meetingId: string, meetingCode: string): Promise<void> {
   try {
-    console.log(`[summary] Generating summary for ${meetingCode}...`);
+    console.log(`[pipeline] Running AI pipeline for ${meetingCode}…`);
     const segments = await getMeetingTranscript(meetingId);
     if (!segments || segments.length === 0) {
-      console.log(`[summary] No segments found for ${meetingCode}, skipping`);
+      console.log(`[pipeline] No segments found for ${meetingCode}, skipping`);
       return;
     }
-    const { summary, keyInsights, detailedRewrite, importantPoints } = await generateSummary(
+    const result = await runPipeline(
       segments.map((s: Record<string, unknown>) => ({
         speakerName: s.speaker_name as string | null,
         speakerLabel: s.speaker_label as string,
         text: s.text as string,
         startMs: s.start_ms as number,
+        endMs: s.end_ms as number,
       })),
-      meetingCode
+      meetingCode,
     );
-    if (summary) {
-      await saveSummary(meetingId, summary, keyInsights, detailedRewrite, importantPoints);
-      console.log(`[summary] Saved for ${meetingCode}`);
-    }
+    // Persist whatever we got — even partial results
+    await savePipelineResults(meetingId, result);
+    console.log(`[pipeline] Done for ${meetingCode} (${Object.values(result.status).filter(s => s === 'ok').length} modules ok)`);
   } catch (err) {
-    console.error(`[summary] Failed for ${meetingCode}:`, (err as Error).message);
+    console.error(`[pipeline] Unhandled error for ${meetingCode}:`, (err as Error).message);
+    // Even on a top-level crash, leave a row in the table — saveSummary fallback so UI shows something
+    try {
+      await saveSummary(meetingId, 'Analysis failed. The transcript is preserved.', [], '', []);
+    } catch {}
   }
 }
