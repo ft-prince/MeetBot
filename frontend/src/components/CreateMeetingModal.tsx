@@ -7,7 +7,9 @@ interface Props {
   onCreated: () => void
 }
 
-const MEET_URL_RE = /^https?:\/\/meet\.google\.com\/[a-z0-9-]+/i
+// Accepts Google Meet, Zoom, and Microsoft Teams meeting URLs
+const MEET_URL_RE =
+  /^https?:\/\/(meet\.google\.com\/[a-z0-9-]+|[^/]*zoom\.us\/(j|wc)\/\d+|teams\.(microsoft|live)\.(com|us)\/)/i
 
 function toLocalISO(date: string, time: string): string | null {
   if (!date || !time) return null
@@ -61,7 +63,7 @@ export function CreateMeetingModal({ open, onClose, onCreated }: Props) {
 
   const submit = async () => {
     if (!title.trim()) return setError('Title is required')
-    if (!MEET_URL_RE.test(meetingUrl.trim())) return setError('Enter a valid Google Meet link')
+    if (!MEET_URL_RE.test(meetingUrl.trim())) return setError('Enter a valid Google Meet, Zoom, or Microsoft Teams link')
     const scheduledFor = toLocalISO(date, time)
     if (!scheduledFor) return setError('Pick a valid date and time')
     if (new Date(scheduledFor).getTime() < Date.now() - 60_000) {
@@ -133,7 +135,7 @@ export function CreateMeetingModal({ open, onClose, onCreated }: Props) {
             <input
               className="input"
               type="url"
-              placeholder="https://meet.google.com/abc-defg-hij"
+              placeholder="Google Meet, Zoom, or Microsoft Teams link"
               value={meetingUrl}
               onChange={e => setMeetingUrl(e.target.value)}
             />

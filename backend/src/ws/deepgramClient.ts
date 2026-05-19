@@ -35,6 +35,10 @@ export class DeepgramClient {
     this.live.send(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer)
   }
 
+  get streamStartWallMs(): number | null {
+    return this.firstAudioWallMs
+  }
+
   disconnect(): void {
     this.shouldReconnect = false
     this.isOpen = false

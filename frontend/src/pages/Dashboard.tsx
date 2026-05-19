@@ -67,9 +67,10 @@ export function Dashboard() {
     const trimmed = url.trim()
     if (!trimmed) return
     const isGoogleMeet = trimmed.includes("meet.google.com")
-    const isZoom = /zoom\.us\/j\/\d+/i.test(trimmed)
-    if (!isGoogleMeet && !isZoom) {
-      setJoinError('Please enter a valid Google Meet or Zoom link.')
+    const isZoom = /zoom\.us\/(j|wc)\/\d+/i.test(trimmed)
+    const isTeams = /teams\.(microsoft|live)\.(com|us)\//i.test(trimmed)
+    if (!isGoogleMeet && !isZoom && !isTeams) {
+      setJoinError('Please enter a valid Google Meet, Zoom, or Microsoft Teams link.')
       return
     }
     setJoinError(null)
@@ -111,7 +112,7 @@ export function Dashboard() {
             <input
               className="input flex-1"
               type="url"
-              placeholder="Paste Google Meet or Zoom link"
+              placeholder="Paste Google Meet, Zoom, or Microsoft Teams link"
               value={url}
               onChange={e => { setUrl(e.target.value); setJoinError(null) }}
               onKeyDown={e => e.key === "Enter" && join()}

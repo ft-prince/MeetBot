@@ -11,6 +11,7 @@ import { handleConnection } from './ws/ingestHandler';
 import apiRouter from './routes/api';
 import authRouter, { handleGoogleCallback } from './routes/auth';
 import calendarRouter from './routes/calendar';
+import recallRouter from './routes/recall';
 import { startScheduler } from './services/schedulerService';
 // session type augmentation — loaded via tsconfig includes
 
@@ -55,6 +56,9 @@ async function main() {
   // through to the SPA catch-all.
   app.get('/accounts/google/login/callback', handleGoogleCallback);
   app.get('/accounts/google/login/callback/', handleGoogleCallback);
+  // Recall routes must be mounted BEFORE /api (which has auth middleware)
+  // The webhook endpoint must be public — Recall POSTs to it without auth.
+  app.use('/api/recall', recallRouter);
   app.use('/api', apiRouter);
   app.use('/api/calendar', calendarRouter);
 

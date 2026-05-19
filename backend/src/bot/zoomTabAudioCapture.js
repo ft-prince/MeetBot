@@ -136,10 +136,8 @@
   // }
 
   function getActiveSpeakerFromDOM () {
-    // Strategy 1 (PRIMARY, verified): Zoom puts the current active speaker
-    // inside .speaker-active-container__wrap. The name lives in
-    // .video-avatar__avatar-footer > span. Works for both video-on and
-    // video-off participants — this is the deterministic signal.
+    // Strategy 1 (PRIMARY): Zoom puts the current active speaker inside
+    // .speaker-active-container__wrap. Works for video-on participants.
     const primary = document.querySelector(
       '.speaker-active-container__wrap .video-avatar__avatar-footer span'
     )
@@ -148,9 +146,8 @@
       return primaryName
     }
 
-    // Strategy 2 (fallback): older "speaker-active" / "active-speaker" classes
-    // on some Zoom builds.
-    const explicitSelectors = [
+    // Strategy 2: explicit active/speaking class selectors on video tiles
+    const tileSelectors = [
       '[class*="speaker-active"] [class*="display-name"]',
       '[class*="active-speaker"] [class*="display-name"]',
       '.speaker-active-container__display-name',
@@ -158,26 +155,45 @@
       '[class*="speaking"] [class*="name"]',
       '[aria-label*="is speaking" i]',
     ]
-    for (const sel of explicitSelectors) {
+    for (const sel of tileSelectors) {
       const el = document.querySelector(sel)
       const name = el?.textContent?.trim()
       if (name && name.length > 1 && !/^note|recorder/i.test(name)) return name
     }
 
-    // Strategy 3 (last-resort heuristic): duplicate-tile.
-    // If neither container exists, fall back to detecting whose avatar tile
-    // appears twice in the gallery (main stage + grid).
-    const counts = new Map()
-    document.querySelectorAll('.video-avatar__avatar-name').forEach(el => {
-      const name = (el.textContent || '').replace(/\s*\([^)]*\)\s*$/, '').trim()
-      if (!name || /^note|recorder/i.test(name)) return
-      counts.set(name, (counts.get(name) || 0) + 1)
-    })
-    let best = null, bestCount = 1
-    for (const [name, n] of counts) {
-      if (n > bestCount) { bestCount = n; best = name }
+    // Strategy 3: participant PANEL row speaking indicator.
+    // Zoom adds speaking/audio-active classes to panel list items even for
+    // camera-off participants — key for identifying speakers without video.
+    const panelSelectors = [
+      '[class*="participants-item"][class*="speaking"] .participants-item__display-name',
+      '[class*="participants-item"][class*="active"] .participants-item__display-name',
+      '[class*="participants-item"][class*="audio"] .participants-item__display-name',
+      '.participants-item--speaking .participants-item__display-name',
+    ]
+    for (const sel of panelSelectors) {
+      const el = document.querySelector(sel)
+      const name = el?.textContent?.trim()
+      if (name && name.length > 1 && !/^note|recorder/i.test(name)) return name
     }
-    return best
+
+    // Strategy 4: audio meter canvas/SVG inside a participant panel row.
+    // Mirrors Meet's approach of detecting visible audio meter elements.
+    for (const row of document.querySelectorAll('[class*="participants-item"]')) {
+      const meter = row.querySelector('canvas, svg[class*="audio" i], [class*="audio-meter" i], [class*="sound" i]')
+      if (meter) {
+        const r = meter.getBoundingClientRect()
+        if (r.width > 2 && r.height > 2) {
+          const nameEl = row.querySelector('.participants-item__display-name')
+          const name = nameEl?.textContent?.trim()
+          if (name && name.length > 1 && !/^note|recorder/i.test(name)) return name
+        }
+      }
+    }
+
+    // NOTE: Duplicate-tile heuristic intentionally removed — a participant's tile
+    // appears twice (main stage + grid) regardless of speaking state, causing
+    // false attribution for camera-on participants.
+    return null
   }
 
 

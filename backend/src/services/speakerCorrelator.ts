@@ -46,6 +46,9 @@ export class SpeakerCorrelator {
   // For logging unresolved segments to retry later
   private unresolvedSegments: TranscriptSegment[] = [];
 
+  // All participants seen via participant_known events
+  private knownParticipants: string[] = [];
+
   // Tolerance: DOM events can lag audio by up to this many ms
   private readonly TOLERANCE_MS = 800;
 
@@ -87,6 +90,9 @@ export class SpeakerCorrelator {
 
   // Register a known participant — if only one speaker label exists, auto-assign
   registerParticipant(name: string): void {
+    if (!this.knownParticipants.includes(name)) {
+      this.knownParticipants.push(name)
+    }
     if ([...this.labelToName.values()].includes(name)) return
     const unlabelledSpeakers = [...new Set(
       this.unresolvedSegments.map(s => s.speakerLabel)
@@ -98,10 +104,13 @@ export class SpeakerCorrelator {
       this.onSpeakerIdentified?.(label, name)
       this.resolveBacklog(label, name)
     }
+    this.tryEliminationAssignment()
   }
 
   // Main method: given a Deepgram segment, return it with speaker name if known
-  correlate(segment: TranscriptSegment): IdentifiedSegment {
+  // wallOffset: add to segment timestamps before comparing with DOM events (wall-clock).
+  // For Meet (per-track) this is always 0. For Zoom mixed audio, pass firstAudioWallMs.
+  correlate(segment: TranscriptSegment, wallOffset = 0): IdentifiedSegment {
     const label = segment.speakerLabel;
 
     // Already have a confirmed mapping
@@ -109,8 +118,11 @@ export class SpeakerCorrelator {
       return { ...segment, speakerName: this.labelToName.get(label)! };
     }
 
-    // Try to identify from DOM events
-    const name = this.findMatchingDomSpeaker(segment.startMs, segment.endMs);
+    // Try to identify from DOM events using wall-clock-adjusted timestamps
+    const name = this.findMatchingDomSpeaker(
+      segment.startMs + wallOffset,
+      segment.endMs + wallOffset
+    );
 
     if (name) {
       this.labelToName.set(label, name);
@@ -123,8 +135,9 @@ export class SpeakerCorrelator {
       return { ...segment, speakerName: name };
     }
 
-    // Cannot resolve yet — queue for retry
-    this.unresolvedSegments.push(segment);
+    // Cannot resolve yet — queue for retry (store wallOffset so retry uses same offset)
+    this.unresolvedSegments.push({ ...segment, _wallOffset: wallOffset } as any);
+    this.tryEliminationAssignment();
     return { ...segment, speakerName: null };
   }
 
@@ -155,7 +168,11 @@ export class SpeakerCorrelator {
         continue;
       }
 
-      const name = this.findMatchingDomSpeaker(seg.startMs, seg.endMs);
+      const wallOffset = (seg as any)._wallOffset ?? 0;
+      const name = this.findMatchingDomSpeaker(
+        seg.startMs + wallOffset,
+        seg.endMs + wallOffset
+      );
       if (name) {
         this.labelToName.set(seg.speakerLabel, name);
         this.onSpeakerIdentified?.(seg.speakerLabel, name);
@@ -166,6 +183,28 @@ export class SpeakerCorrelator {
     }
 
     this.unresolvedSegments = stillUnresolved;
+  }
+
+  private tryEliminationAssignment(): void {
+    const unresolvedLabels = [...new Set(
+      this.unresolvedSegments.map(s => s.speakerLabel)
+    )].filter(label => !this.labelToName.has(label));
+
+    if (unresolvedLabels.length !== 1) return;
+
+    const assignedNames = new Set(this.labelToName.values());
+    const unassignedParticipants = this.knownParticipants.filter(
+      n => !assignedNames.has(n)
+    );
+
+    if (unassignedParticipants.length === 1) {
+      const label = unresolvedLabels[0];
+      const name = unassignedParticipants[0];
+      this.labelToName.set(label, name);
+      console.log(`[correlator] Elimination-assigned ${label} → "${name}"`);
+      this.onSpeakerIdentified?.(label, name);
+      this.resolveBacklog(label, name);
+    }
   }
 
   private findMatchingDomSpeaker(startMs: number, endMs: number): string | null {
