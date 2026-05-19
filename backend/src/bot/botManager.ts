@@ -24,9 +24,14 @@ function isTeamsUrl(url: string): boolean {
   return /teams\.(microsoft|live)\.(com|us)\//i.test(url);
 }
 
-// Platforms that use Recall (managed cloud bot) instead of our self-hosted Playwright bot
+function isMeetUrl(url: string): boolean {
+  return /meet\.google\.com\//i.test(url);
+}
+
+// All meeting platforms now go through Recall (managed cloud bot).
+// The self-hosted MeetBot is kept in the codebase as a fallback but is not used.
 function isRecallPlatform(url: string): boolean {
-  return isZoomUrl(url) || isTeamsUrl(url);
+  return isZoomUrl(url) || isTeamsUrl(url) || isMeetUrl(url);
 }
 
 function extractMeetingId(url: string): string {
@@ -56,7 +61,7 @@ export const botManager = {
     if (activeBots.has(meetingId)) return meetingId;
 
     if (isRecallPlatform(meetingUrl)) {
-      // ── Zoom / Teams → Recall cloud bot ──────────────────────────────────
+      // ── Google Meet / Zoom / Teams → Recall cloud bot ────────────────────
       // Recall handles audio capture, speaker attribution, and transcription
       // in the cloud. Transcript is fetched after the meeting ends via
       // endRecallSession → saved to DB → AI pipeline runs.
