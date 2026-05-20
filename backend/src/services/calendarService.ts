@@ -22,6 +22,15 @@ export async function syncCalendar(userId: string): Promise<CalendarEvent[]> {
   const auth = await getAuthedClient(userId);
   const calendar = google.calendar({ version: 'v3', auth });
 
+  // If the user has global auto-bot-join enabled in their profile, NEW calendar
+  // events default to auto_join=true. Existing rows' auto_join is preserved by
+  // the ON CONFLICT clause below (so individual user opt-outs aren't clobbered).
+  const userRow = await db.query<{ auto_join_minutes: number }>(
+    'SELECT auto_join_minutes FROM users WHERE id = $1',
+    [userId],
+  );
+  const defaultAutoJoin = (userRow.rows[0]?.auto_join_minutes ?? 0) > 0;
+
   const now = new Date();
   const until = new Date();
   until.setDate(until.getDate() + 25);
@@ -51,11 +60,13 @@ export async function syncCalendar(userId: string): Promise<CalendarEvent[]> {
       name: a.displayName,
     }));
 
-    // Upsert into calendar_events — preserve auto_join if already set
+    // Upsert into calendar_events — preserve auto_join on existing rows so we
+    // don't clobber a user's per-event opt-out. NEW rows inherit auto_join from
+    // the user's global setting (defaultAutoJoin).
     const result = await db.query(
       `INSERT INTO calendar_events
-         (id, user_id, google_event_id, title, meet_url, start_time, end_time, attendees, synced_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+         (id, user_id, google_event_id, title, meet_url, start_time, end_time, attendees, auto_join, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
        ON CONFLICT (user_id, google_event_id) DO UPDATE SET
          title      = EXCLUDED.title,
          meet_url   = EXCLUDED.meet_url,
@@ -73,6 +84,7 @@ export async function syncCalendar(userId: string): Promise<CalendarEvent[]> {
         startTime,
         endTime,
         JSON.stringify(attendees),
+        defaultAutoJoin,
       ]
     );
 
@@ -83,13 +95,19 @@ export async function syncCalendar(userId: string): Promise<CalendarEvent[]> {
   return events;
 }
 
-/** Get upcoming events for a user from DB */
+/**
+ * Get calendar events for a user — both past (last 30 days) and all future.
+ * The frontend computes status (Done / Live / Upcoming) from start_time/end_time/meeting_id
+ * and groups them accordingly. The Dashboard further filters this client-side to
+ * future-only events for its "Upcoming Meetings" panel.
+ */
 export async function getUpcomingEvents(userId: string): Promise<CalendarEvent[]> {
   const result = await db.query(
     `SELECT * FROM calendar_events
-     WHERE user_id = $1 AND end_time > now()
+     WHERE user_id = $1
+       AND start_time >= (now() - interval '30 days')
      ORDER BY start_time ASC
-     LIMIT 50`,
+     LIMIT 200`,
     [userId]
   );
   return result.rows.map(rowToEvent);

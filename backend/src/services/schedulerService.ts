@@ -30,9 +30,17 @@ async function checkCalendarEvents(): Promise<void> {
     for (const ev of events) {
       console.log(`[scheduler] Auto-joining calendar event "${ev.title}" for user ${ev.userId}`);
       try {
-        const meetingId = await botManager.launch(ev.meetUrl);
-        await linkMeeting(ev.eventId, meetingId);
-        console.log(`[scheduler] Launched bot for "${ev.title}" → meeting ${meetingId}`);
+        // launch() returns the meetingCode (e.g. "abc-defg-hij"), NOT a DB UUID.
+        // We must resolve the DB UUID via getMeetingIdByCode before calling linkMeeting,
+        // because calendar_events.meeting_id is a UUID FK to meetings.id.
+        const meetingCode = await botManager.launch(ev.meetUrl, ev.userId);
+        const dbMeetingId = await getMeetingIdByCode(meetingCode, ev.userId);
+        if (dbMeetingId) {
+          await linkMeeting(ev.eventId, dbMeetingId);
+        } else {
+          console.warn(`[scheduler] Could not resolve DB UUID for meetingCode=${meetingCode} — skipping linkMeeting`);
+        }
+        console.log(`[scheduler] Launched bot for "${ev.title}" → code=${meetingCode} dbId=${dbMeetingId}`);
       } catch (err) {
         console.error(`[scheduler] Failed to auto-join "${ev.title}":`, (err as Error).message);
       }

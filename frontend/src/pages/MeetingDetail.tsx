@@ -3,7 +3,6 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Topbar } from '../components/Topbar'
 import { Pill } from '../components/Pill'
 import { Tabs } from '../components/Tabs'
-import { useLiveMeetings } from '../hooks/useLiveMeetings'
 import { api } from '../lib/api'
 import { fmtClock, fmtDate, fmtDuration, fmtTimeOfDay, initials } from '../lib/format'
 import { colorMapFor } from '../lib/colors'
@@ -15,7 +14,6 @@ type BotStatus = 'active' | 'inactive' | 'unknown'
 export function MeetingDetail() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
-  const { start: startLive } = useLiveMeetings()
 
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [summary, setSummary] = useState<MeetingSummary | null>(null)
@@ -23,7 +21,7 @@ export function MeetingDetail() {
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const [botStatus, setBotStatus] = useState<BotStatus>('unknown')
-  const [botAction, setBotAction] = useState<'sending' | 'stopping' | 'exiting' | null>(null)
+  const [botAction, setBotAction] = useState<'stopping' | 'exiting' | null>(null)
   const [botError, setBotError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -77,19 +75,6 @@ export function MeetingDetail() {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [botStatus, meetingCode, loadData, checkBotStatus])
 
-  const handleSendBot = async () => {
-    if (!meetingCode) return
-    setBotAction('sending'); setBotError(null)
-    try {
-      const { meetingId } = await api.joinMeeting('https://meet.google.com/' + meetingCode)
-      startLive(meetingId)
-      navigate('/live')
-    } catch (err) {
-      setBotError((err as Error).message)
-      setBotAction(null)
-    }
-  }
-
   const handleStopBot = async () => {
     if (!meetingCode) return
     setBotAction('stopping'); setBotError(null)
@@ -135,7 +120,7 @@ export function MeetingDetail() {
   const tabs = [
     { id: 'transcript', label: 'Transcript', badge: segments.length || null },
     { id: 'summary', label: 'Summary' },
-    { id: 'actions', label: 'Action Items', badge: summary?.actionItems?.length || null },
+    { id: 'actions', label: 'Actions', badge: summary?.actionItems?.length || null },
     { id: 'insights', label: 'Insights', badge: (summary?.keyInsights?.length || 0) + (summary?.keyQuestions?.length || 0) || null },
     { id: 'speakers', label: 'Speakers', badge: (summary?.speakerInsights?.length || analytics.participantCount) || null },
     { id: 'chapters', label: 'Chapters', badge: summary?.chapters?.length || null },
@@ -168,22 +153,14 @@ export function MeetingDetail() {
                 ? <Pill variant="done">Summarized</Pill>
                 : <Pill variant="pending">Processing</Pill>
           )}
-          {meetingCode && (
+          {meetingCode && isLive && (
             <div className="flex items-center gap-2">
-              {isLive ? (
-                <>
-                  <button onClick={handleStopBot} disabled={botAction !== null} className="btn btn-secondary btn-sm">
-                    {botAction === 'stopping' ? 'Stopping…' : 'Stop Bot'}
-                  </button>
-                  <button onClick={handleExitBot} disabled={botAction !== null} className="btn btn-sm border border-danger text-danger hover:bg-red-50 transition-colors rounded-lg px-3 py-1.5 text-xs font-semibold">
-                    {botAction === 'exiting' ? 'Exiting…' : 'Exit Bot'}
-                  </button>
-                </>
-              ) : (
-                <button onClick={handleSendBot} disabled={botAction !== null} className="btn btn-primary btn-sm">
-                  {botAction === 'sending' ? 'Launching…' : 'Send Bot'}
-                </button>
-              )}
+              <button onClick={handleStopBot} disabled={botAction !== null} className="btn btn-secondary btn-sm">
+                {botAction === 'stopping' ? 'Stopping…' : 'Stop Bot'}
+              </button>
+              <button onClick={handleExitBot} disabled={botAction !== null} className="btn btn-sm border border-danger text-danger hover:bg-red-50 transition-colors rounded-lg px-3 py-1.5 text-xs font-semibold">
+                {botAction === 'exiting' ? 'Exiting…' : 'Exit Bot'}
+              </button>
             </div>
           )}
         </div>

@@ -11,6 +11,17 @@
   ::-webkit-scrollbar-track { background: transparent; }
 }
 
+@layer utilities {
+  /* Hide scrollbar while keeping scroll behaviour (used for tab strips) */
+  .scrollbar-none {
+    scrollbar-width: none;          /* Firefox */
+    -ms-overflow-style: none;       /* IE / Edge */
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;                  /* Chrome / Safari */
+  }
+}
+
 @layer components {
   .btn {
     @apply inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium border-0 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed;

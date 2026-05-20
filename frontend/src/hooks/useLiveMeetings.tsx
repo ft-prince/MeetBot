@@ -192,17 +192,28 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
     return dbId
   }, [])
 
-  // Reconnect any bots that are still running after a page refresh
+  // Reconnect any bots that are still running after a page refresh, and poll for
+  // new bots started by the auto-join scheduler while the page is already open.
   useEffect(() => {
-    fetch('/api/bots/active', { credentials: 'include' })
-      .then(r => r.ok ? r.json() as Promise<{ active: string[] }> : null)
-      .then(data => {
-        if (!data?.active?.length) return
-        for (const code of data.active) start(code)
-      })
-      .catch(() => {})
+    const syncActiveBots = () => {
+      fetch('/api/bots/active', { credentials: 'include' })
+        .then(r => r.ok ? r.json() as Promise<{ active: string[] }> : null)
+        .then(data => {
+          if (!data?.active?.length) return
+          for (const code of data.active) {
+            // start() is idempotent — it checks `if (prev.has(id)) return prev` internally
+            if (!meetingsRef.current.has(code)) start(code)
+          }
+        })
+        .catch(() => {})
+    }
+
+    syncActiveBots() // run immediately on mount
+    // Poll every 30 s so autobot-launched meetings appear without a page refresh
+    const timer = setInterval(syncActiveBots, 30_000)
+    return () => clearInterval(timer)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // intentionally empty — only runs on mount; start is stable
+  }, []) // intentionally empty — start and meetingsRef are stable
 
   // Cleanup on unmount
   useEffect(() => () => { wsRef.current.forEach(ws => ws.close()) }, [])

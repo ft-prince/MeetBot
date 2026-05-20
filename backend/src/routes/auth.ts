@@ -108,6 +108,23 @@ router.patch('/settings', async (req: Request, res: Response) => {
   }
   const { db } = await import('../db/client');
   await db.query('UPDATE users SET auto_join_minutes = $1 WHERE id = $2', [autoJoinMinutes, req.session.userId]);
+
+  // When user enables global auto-join, flip every one of their FUTURE calendar
+  // events to auto_join = true so the toggle shows ON by default for all of them.
+  // Past/in-progress events and the user's existing opt-outs on past meetings
+  // aren't touched. The user can still disable any individual upcoming meeting
+  // via the calendar UI after this.
+  if (autoJoinMinutes > 0) {
+    await db.query(
+      `UPDATE calendar_events
+       SET auto_join = true
+       WHERE user_id = $1
+         AND start_time > now()
+         AND auto_join = false`,
+      [req.session.userId],
+    );
+  }
+
   res.json({ ok: true });
 });
 
