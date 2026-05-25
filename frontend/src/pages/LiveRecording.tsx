@@ -41,7 +41,7 @@ export function LiveRecording() {
             <input
               className="input flex-1 max-w-xl"
               type="url"
-              placeholder="Paste Google Meet link — https://meet.google.com/abc-defg-hij"
+              placeholder="Paste Google Meet or Zoom link"
               value={url}
               onChange={e => setUrl(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && join()}

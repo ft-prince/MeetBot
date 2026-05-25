@@ -3,6 +3,7 @@ import { IncomingMessage } from 'http';
 import { URL } from 'url';
 import { DeepgramClient as WhisperClient } from './deepgramClient';
 import { SpeakerCorrelator } from '../services/speakerCorrelator';
+import type { IdentifiedSegment } from '../services/speakerCorrelator';
 import {
   createMeeting,
   endMeeting,
@@ -28,6 +29,10 @@ interface Session {
   // Per-participant track transcription (replaces merged audio)
   trackWhispers: Map<string, WhisperClient>;  // trackId → WhisperClient
   trackNames: Map<string, string>;            // trackId → participant name
+  // Live active speaker (Zoom mixed-stream path): set from DOM speaker_start
+  // events and used to tag transcript segments, since a single mixed stream
+  // can't be diarized reliably per participant.
+  currentSpeaker: string | null;
 }
 
 // Map from meetingCode → session (so panel can join same session)
@@ -115,6 +120,7 @@ async function handleAudioSource(ws: WebSocket, meetingCode: string): Promise<vo
       isAudioSource: true,
       trackWhispers: new Map(),
       trackNames: new Map(),
+      currentSpeaker: null,
     };
 
     sessions.set(meetingCode, session);
@@ -180,6 +186,10 @@ function handleControlMessage(session: Session, msg: Record<string, unknown>): v
   if (type === 'speaker_start') {
     const name = msg.name as string;
     const startMs = msg.startMs as number;
+    // Live active speaker drives Zoom mixed-stream naming. Keep the last speaker
+    // sticky (not cleared on speaker_end) so segments finalised just after speech
+    // are still attributed correctly.
+    session.currentSpeaker = name;
     session.correlator.domSpeakerStart(name, startMs);
     logDomEvent(session.meetingId, name, 'start', startMs).catch(console.error);
   }
@@ -239,6 +249,11 @@ function broadcastToPanel(
   }
 }
 
+// Returns the DB UUID for an active session — used by Recall bot to save segments
+export function getSessionMeetingId(meetingCode: string): string | null {
+  return sessions.get(meetingCode)?.meetingId ?? null;
+}
+
 // Called by botManager to push events to all panel clients of a meeting
 export function broadcastToMeeting(
   meetingCode: string,
@@ -259,17 +274,24 @@ export async function createBotSession(meetingCode: string, userId?: string): Pr
   const whisper = new WhisperClient(
     (segment, isFinal) => {
       const identified = correlator.correlate(segment);
+      // Prefer the live active speaker (Zoom mixed stream) over Deepgram's
+      // diarization label, which is unreliable on a single combined stream.
+      const live = sessions.get(meetingCode)?.currentSpeaker ?? null;
+      const speakerName = live ?? identified.speakerName;
+      const speakerLabel = live ?? identified.speakerLabel;
+      const tagged: IdentifiedSegment = { ...identified, speakerName, speakerLabel };
+
       broadcastToPanel(panelClients, {
         type: isFinal ? 'transcript.final' : 'transcript.interim',
-        segmentId: identified.segmentId,
-        speakerLabel: identified.speakerLabel,
-        speakerName: identified.speakerName,
-        text: identified.text,
-        startMs: identified.startMs,
-        endMs: identified.endMs,
-        confidence: identified.confidence,
+        segmentId: tagged.segmentId,
+        speakerLabel,
+        speakerName,
+        text: tagged.text,
+        startMs: tagged.startMs,
+        endMs: tagged.endMs,
+        confidence: tagged.confidence,
       });
-      if (isFinal) saveSegment(meeting.id, identified).catch(console.error);
+      if (isFinal) saveSegment(meeting.id, tagged).catch(console.error);
     },
     (err) => console.error('[session] Whisper error:', err)
   );
@@ -291,6 +313,7 @@ export async function createBotSession(meetingCode: string, userId?: string): Pr
     isAudioSource: true,
     trackWhispers: new Map(),
     trackNames: new Map(),
+    currentSpeaker: null,
   });
 
   console.log(`[session] Bot session created for ${meetingCode} (db: ${meeting.id})`);
@@ -314,16 +337,19 @@ export function forwardTrackAudio(meetingCode: string, chunk: Buffer, trackId: s
   if (!session) return;
 
   if (!session.trackWhispers.has(trackId)) {
+    const trackIndex = session.trackWhispers.size + 1;
+    const shortLabel = `Speaker ${trackIndex}`;
     const speakerName = () => session.trackNames.get(trackId) ?? null;
 
     const w = new WhisperClient(
       (segment, isFinal) => {
         const name = speakerName();
-        const identified = { ...segment, speakerName: name, speakerLabel: trackId };
+        const label = name ?? shortLabel;
+        const identified = { ...segment, speakerName: name, speakerLabel: label };
         broadcastToPanel(session.panelClients, {
           type: isFinal ? 'transcript.final' : 'transcript.interim',
-          segmentId:   identified.segmentId,
-          speakerLabel: trackId,
+          segmentId:    identified.segmentId,
+          speakerLabel: label,
           speakerName:  name,
           text:         identified.text,
           startMs:      identified.startMs,
@@ -336,7 +362,7 @@ export function forwardTrackAudio(meetingCode: string, chunk: Buffer, trackId: s
     );
     w.connect();
     session.trackWhispers.set(trackId, w);
-    console.log(`[session] New whisper client for track ${trackId.slice(0, 8)}`);
+    console.log(`[session] New whisper client for track ${trackId.slice(0, 8)} → ${shortLabel}`);
   }
 
   session.trackWhispers.get(trackId)!.sendAudio(chunk);

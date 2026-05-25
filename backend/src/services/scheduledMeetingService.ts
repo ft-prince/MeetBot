@@ -27,13 +27,14 @@ export interface ScheduleInput {
   autoLaunch?: boolean;
 }
 
-const MEET_URL = /^https?:\/\/meet\.google\.com\/[a-z0-9-]+/i;
+const MEET_URL  = /^https?:\/\/meet\.google\.com\/[a-z0-9-]+/i;
+const ZOOM_URL  = /^https?:\/\/[a-z0-9.-]*zoom\.us\/(j|wc\/join)\/\d+/i;
 
 export function validateScheduleInput(input: Partial<ScheduleInput>): string | null {
   if (!input.title || input.title.trim().length === 0) return 'Title is required';
   if (input.title.length > 200) return 'Title is too long (max 200 chars)';
-  if (!input.meetingUrl || !MEET_URL.test(input.meetingUrl)) {
-    return 'A valid Google Meet URL is required (https://meet.google.com/...)';
+  if (!input.meetingUrl || (!MEET_URL.test(input.meetingUrl) && !ZOOM_URL.test(input.meetingUrl))) {
+    return 'A valid Google Meet or Zoom URL is required';
   }
   if (!input.scheduledFor || isNaN(input.scheduledFor.getTime())) {
     return 'A valid scheduled date/time is required';

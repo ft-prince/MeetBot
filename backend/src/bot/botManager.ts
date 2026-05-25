@@ -1,38 +1,73 @@
 import { MeetBot } from './meetBot';
+import { ZoomBot } from './zoomBot';
+import { RecallBot } from './recallBot';
+import { config } from '../config';
 import {
   broadcastToMeeting,
   createBotSession,
   endBotSession,
   endBotSessionNoSummary,
+  forwardAudio,
   forwardEvent,
   forwardTrackAudio,
+  getSessionMeetingId,
   setTrackName,
 } from '../ws/ingestHandler';
+import { saveSegment } from '../services/meetingService';
+import type { IdentifiedSegment } from '../services/speakerCorrelator';
 
-const activeBots = new Map<string, MeetBot>();
+// MeetBot and ZoomBot share an identical start()/stop() callback contract, so the
+// same in-house pipeline wiring drives both.
+type BrowserBot = MeetBot | ZoomBot;
+
+const activeBots = new Map<string, BrowserBot>();
+const activeRecallBots = new Map<string, RecallBot>();
 
 function extractMeetingId(url: string): string {
-  const m = url.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
-  return m ? m[1] : `bot-${Date.now()}`;
+  const meetMatch = url.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
+  if (meetMatch) return meetMatch[1];
+  const zoomMatch = url.match(/\/(?:j|wc\/join)\/(\d+)/);
+  if (zoomMatch) return `zoom-${zoomMatch[1]}`;
+  return `bot-${Date.now()}`;
+}
+
+function isZoomUrl(url: string): boolean {
+  return /zoom\.us|zoomgov\.com/i.test(url);
 }
 
 export const botManager = {
   async launch(meetingUrl: string, userId?: string): Promise<string> {
     const meetingId = extractMeetingId(meetingUrl);
-    if (activeBots.has(meetingId)) return meetingId;
+    if (activeBots.has(meetingId) || activeRecallBots.has(meetingId)) return meetingId;
 
-    const bot = new MeetBot();
+    const zoom = isZoomUrl(meetingUrl);
+
+    // Zoom falls back to the Recall cloud bot only when explicitly opted in.
+    if (zoom && config.zoomBotMode === 'recall') {
+      return launchRecallBot(meetingId, meetingUrl, userId);
+    }
+
+    // In-house path: ZoomBot for Zoom URLs, MeetBot for Google Meet.
+    const bot: BrowserBot = zoom ? new ZoomBot() : new MeetBot();
     activeBots.set(meetingId, bot);
 
-    // Create the ingest session before bot joins so it's ready to receive audio
     await createBotSession(meetingId, userId);
 
+    // Google Meet exposes one WebRTC audio track per participant, so each is
+    // transcribed and labelled independently (forwardTrackAudio). Zoom's web
+    // client only renders a single mixed audio stream, so it goes through the
+    // correlator path (forwardAudio) where Deepgram diarization + DOM
+    // speaker_start/end events resolve speaker names.
     bot.start({
       meetingUrl,
       displayName: 'NoteAI Recorder',
 
       onTrackAudio: (chunk, trackId) => {
-        forwardTrackAudio(meetingId, chunk, trackId);
+        if (zoom) {
+          forwardAudio(meetingId, chunk);
+        } else {
+          forwardTrackAudio(meetingId, chunk, trackId);
+        }
       },
 
       onTrackInfo: (trackId, name) => {
@@ -51,7 +86,6 @@ export const botManager = {
       onEnded: () => {
         activeBots.delete(meetingId);
         broadcastToMeeting(meetingId, { type: 'meeting.ended', meetingId });
-        // endBotSession generates summary + saves everything
         endBotSession(meetingId).catch(console.error);
       },
 
@@ -71,21 +105,77 @@ export const botManager = {
     return meetingId;
   },
 
-  // Graceful stop — leaves the meeting cleanly and generates AI summary.
   async stop(meetingId: string): Promise<void> {
+    if (activeRecallBots.has(meetingId)) {
+      const bot = activeRecallBots.get(meetingId)!;
+      activeRecallBots.delete(meetingId);
+      await bot.stop();
+      // endBotSession is called inside onEnded callback after transcript is fetched
+      return;
+    }
     const bot = activeBots.get(meetingId);
     activeBots.delete(meetingId);
     await Promise.all([bot?.stop(), endBotSession(meetingId)]);
   },
 
-  // Force-exit — kills the browser immediately, no summary generated.
   async exit(meetingId: string): Promise<void> {
+    if (activeRecallBots.has(meetingId)) {
+      const bot = activeRecallBots.get(meetingId)!;
+      activeRecallBots.delete(meetingId);
+      await bot.stop();
+      await endBotSessionNoSummary(meetingId);
+      return;
+    }
     const bot = activeBots.get(meetingId);
     activeBots.delete(meetingId);
     await Promise.all([bot?.stop(), endBotSessionNoSummary(meetingId)]);
   },
 
   active(): string[] {
-    return [...activeBots.keys()];
+    return [...activeBots.keys(), ...activeRecallBots.keys()];
   },
 };
+
+async function launchRecallBot(meetingId: string, meetingUrl: string, userId?: string): Promise<string> {
+  // createBotSession creates the DB meeting record and sets up the session so
+  // panel WebSocket clients can connect and receive broadcast events.
+  await createBotSession(meetingId, userId);
+
+  const bot = new RecallBot();
+  activeRecallBots.set(meetingId, bot);
+
+  bot.start(meetingUrl, 'NoteAI', {
+    onJoined: () => {
+      broadcastToMeeting(meetingId, { type: 'bot.joined', meetingId });
+      console.log('[botManager] Recall bot joined', meetingId);
+    },
+
+    onEnded: async (segments: IdentifiedSegment[]) => {
+      activeRecallBots.delete(meetingId);
+
+      const dbMeetingId = getSessionMeetingId(meetingId);
+      if (dbMeetingId && segments.length > 0) {
+        console.log(`[botManager] Saving ${segments.length} Recall segments for ${meetingId}`);
+        for (const seg of segments) {
+          await saveSegment(dbMeetingId, seg).catch(err =>
+            console.error('[botManager] saveSegment error:', err)
+          );
+        }
+      }
+
+      await endBotSession(meetingId);
+    },
+
+    onError: (err: Error) => {
+      console.error('[botManager] Recall bot error:', err);
+      activeRecallBots.delete(meetingId);
+      broadcastToMeeting(meetingId, { type: 'bot.error', meetingId, error: err.message });
+      endBotSession(meetingId).catch(console.error);
+    },
+  }).catch((err: Error) => {
+    console.error('[botManager] Failed to start Recall bot:', err);
+    activeRecallBots.delete(meetingId);
+  });
+
+  return meetingId;
+}
