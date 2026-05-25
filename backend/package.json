@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc && cp src/bot/audioInjector.js dist/bot/audioInjector.js",
+    "build": "tsc && cp src/bot/audioInjector.js dist/bot/audioInjector.js && cp src/bot/zoomAudioInjector.js dist/bot/zoomAudioInjector.js",
     "start": "node dist/index.js",
     "db:migrate": "node scripts/migrate.js"
   },

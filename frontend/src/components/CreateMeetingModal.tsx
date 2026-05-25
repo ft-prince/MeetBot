@@ -7,7 +7,18 @@ interface Props {
   onCreated: () => void
 }
 
-const MEET_URL_RE = /^https?:\/\/meet\.google\.com\/[a-z0-9-]+/i
+const MEET_URL_RE  = /^https?:\/\/meet\.google\.com\/[a-z0-9-]+/i
+const ZOOM_URL_RE  = /^https?:\/\/[a-z0-9.-]*zoom\.us\/(j|wc\/join)\/\d+/i
+
+function detectPlatform(url: string): 'meet' | 'zoom' | null {
+  if (MEET_URL_RE.test(url)) return 'meet'
+  if (ZOOM_URL_RE.test(url)) return 'zoom'
+  return null
+}
+
+function isValidMeetingUrl(url: string): boolean {
+  return MEET_URL_RE.test(url) || ZOOM_URL_RE.test(url)
+}
 
 function toLocalISO(date: string, time: string): string | null {
   if (!date || !time) return null
@@ -61,7 +72,7 @@ export function CreateMeetingModal({ open, onClose, onCreated }: Props) {
 
   const submit = async () => {
     if (!title.trim()) return setError('Title is required')
-    if (!MEET_URL_RE.test(meetingUrl.trim())) return setError('Enter a valid Google Meet link')
+    if (!isValidMeetingUrl(meetingUrl.trim())) return setError('Enter a valid Google Meet or Zoom link')
     const scheduledFor = toLocalISO(date, time)
     if (!scheduledFor) return setError('Pick a valid date and time')
     if (new Date(scheduledFor).getTime() < Date.now() - 60_000) {
@@ -130,13 +141,30 @@ export function CreateMeetingModal({ open, onClose, onCreated }: Props) {
           </Field>
 
           <Field label="Meeting Link" required>
-            <input
-              className="input"
-              type="url"
-              placeholder="https://meet.google.com/abc-defg-hij"
-              value={meetingUrl}
-              onChange={e => setMeetingUrl(e.target.value)}
-            />
+            <div className="relative">
+              <input
+                className="input pr-20"
+                type="url"
+                placeholder="Google Meet or Zoom link"
+                value={meetingUrl}
+                onChange={e => setMeetingUrl(e.target.value)}
+              />
+              {detectPlatform(meetingUrl.trim()) && (
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 pointer-events-none">
+                  {detectPlatform(meetingUrl.trim()) === 'zoom' ? (
+                    <>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="#2D8CFF"><rect width="24" height="24" rx="4" fill="#2D8CFF"/><path d="M15 9.5v5l3.5 2V7.5L15 9.5zM5 8a1 1 0 011-1h8a1 1 0 011 1v8a1 1 0 01-1 1H6a1 1 0 01-1-1V8z" fill="white"/></svg>
+                      Zoom
+                    </>
+                  ) : (
+                    <>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="#34A853"/><path d="M8 12l2.5 2.5L16 9" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      Meet
+                    </>
+                  )}
+                </span>
+              )}
+            </div>
           </Field>
 
           <div className="grid grid-cols-2 gap-3">
