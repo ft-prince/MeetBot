@@ -53,17 +53,21 @@ export const botManager = {
 
     await createBotSession(meetingId, userId);
 
-    // Google Meet exposes one WebRTC audio track per participant, so each is
-    // transcribed and labelled independently (forwardTrackAudio). Zoom's web
-    // client only renders a single mixed audio stream, so it goes through the
-    // correlator path (forwardAudio) where Deepgram diarization + DOM
-    // speaker_start/end events resolve speaker names.
+    // Audio routing:
+    //   • Google Meet: per-participant WebRTC tracks → forwardTrackAudio (one
+    //     Deepgram per track, named via DOM scrape).
+    //   • Zoom WASM client (us05, paid): one mixed Web Audio tap → forwardAudio
+    //     (correlator path), tagged with the live active speaker. The injector
+    //     signals this path by using the synthetic trackId 'zoom-mixed'.
+    //   • Zoom legacy WebRTC (us04, free): per-participant RTC tracks just like
+    //     Meet → forwardTrackAudio, names resolved via co-occurrence in the
+    //     injector and delivered through onTrackInfo / setTrackName.
     bot.start({
       meetingUrl,
       displayName: 'NoteAI Recorder',
 
       onTrackAudio: (chunk, trackId) => {
-        if (zoom) {
+        if (trackId === 'zoom-mixed') {
           forwardAudio(meetingId, chunk);
         } else {
           forwardTrackAudio(meetingId, chunk, trackId);
