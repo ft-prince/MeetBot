@@ -152,8 +152,8 @@ export function Dashboard() {
         </div>
 
         {/* Quick Join + Schedule */}
-        <div className="card p-5 mb-6">
-          <div className="flex items-center justify-between mb-3">
+        <div className="card p-4 sm:p-5 mb-6">
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
             <div className="text-sm font-semibold flex items-center gap-2">
               <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
@@ -162,8 +162,8 @@ export function Dashboard() {
               </svg>
               Quick Join
             </div>
-            <button onClick={() => setModalOpen(true)} className="btn btn-secondary btn-sm">
-              + Schedule Meeting
+            <button onClick={() => setModalOpen(true)} className="btn btn-secondary btn-sm whitespace-nowrap">
+              + Schedule
             </button>
           </div>
           <div className="flex flex-col sm:flex-row gap-2.5">

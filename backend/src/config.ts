@@ -25,11 +25,21 @@ export const config = {
   botZoomPassword: process.env.BOT_ZOOM_PASSWORD || '',
   // Which engine joins Zoom meetings: 'inhouse' (Playwright ZoomBot) or 'recall' (Recall AI fallback)
   zoomBotMode: (process.env.ZOOM_BOT_MODE === 'recall' ? 'recall' : 'inhouse') as 'inhouse' | 'recall',
+  // Support ticket email — set SUPPORT_EMAIL to enable email delivery
+  supportEmail: process.env.SUPPORT_EMAIL || '',
+  smtp: {
+    host:  process.env.SMTP_HOST  || '',
+    port:  parseInt(process.env.SMTP_PORT  || '587', 10),
+    user:  process.env.SMTP_USER  || '',
+    pass:  process.env.SMTP_PASS  || '',
+    from:  process.env.SMTP_FROM  || process.env.SMTP_USER || 'noreply@noteai.local',
+  },
   recall: {
     // API key from https://app.recall.ai/dashboard/api-keys (NOT the webhook secret)
     apiKey: process.env.RECALL_API_KEY || '',
     // Webhook signing secret (whsec_...) — for verifying incoming webhook payloads
     webhookSecret: process.env.RECALL_WEBHOOK_SECRET || '',
+    apiBase: process.env.RECALL_BASE_URL || 'https://ap-northeast-1.recall.ai/api/v1',
     baseUrl: process.env.RECALL_BASE_URL || 'https://ap-northeast-1.recall.ai/api/v1',
   },
 };

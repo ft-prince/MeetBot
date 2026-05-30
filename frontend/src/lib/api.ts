@@ -60,4 +60,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ autoJoin }),
     }),
+
+  // Support
+  submitSupport: (issueType: string, message: string) =>
+    req<{ ok: true }>('/api/support', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issueType, message }),
+    }),
 }

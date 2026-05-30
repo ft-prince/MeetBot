@@ -27,8 +27,8 @@ export function LiveRecording() {
   return (
     <>
       <Topbar title="Live Recording" subtitle="Real-time transcription with speaker identification" />
-      <div className="p-8 flex-1">
-        <div className="card p-5 mb-6">
+      <div className="p-4 sm:p-8 flex-1">
+        <div className="card p-4 sm:p-5 mb-6">
           <div className="text-sm font-semibold mb-3 flex items-center gap-2">
             <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
               <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
@@ -37,16 +37,16 @@ export function LiveRecording() {
             </svg>
             Start Recording
           </div>
-          <div className="flex gap-2.5">
+          <div className="flex flex-col sm:flex-row gap-2.5">
             <input
-              className="input flex-1 max-w-xl"
+              className="input flex-1"
               type="url"
               placeholder="Paste Google Meet or Zoom link"
               value={url}
               onChange={e => setUrl(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && join()}
             />
-            <button onClick={join} disabled={joining} className="btn btn-primary">
+            <button onClick={join} disabled={joining} className="btn btn-primary flex-shrink-0 justify-center">
               {joining ? 'Launching…' : '+ Start Recording'}
             </button>
           </div>
