@@ -11,6 +11,7 @@ import { handleConnection } from './ws/ingestHandler';
 import apiRouter from './routes/api';
 import authRouter, { handleGoogleCallback } from './routes/auth';
 import calendarRouter from './routes/calendar';
+import supportRouter from './routes/support';
 import recallWebhookRouter from './routes/recallWebhook';
 import { startScheduler } from './services/schedulerService';
 // session type augmentation — loaded via tsconfig includes
@@ -58,6 +59,7 @@ async function main() {
   app.get('/accounts/google/login/callback/', handleGoogleCallback);
   app.use('/api', apiRouter);
   app.use('/api/calendar', calendarRouter);
+  app.use('/api/support', supportRouter);
   app.use('/recall', recallWebhookRouter);
 
   // Serve the React UI build (frontend/dist). Falls back to the legacy vanilla
