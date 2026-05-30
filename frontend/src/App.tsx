@@ -8,6 +8,7 @@ import { Calendar } from './pages/Calendar'
 import { AllMeetings } from './pages/AllMeetings'
 import { MeetingDetail } from './pages/MeetingDetail'
 import { Profile } from './pages/Profile'
+import { HelpSupport } from './pages/HelpSupport'
 import { SignIn } from './pages/SignIn'
 
 export default function App() {
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="meetings" element={<AllMeetings />} />
             <Route path="meetings/:id" element={<MeetingDetail />} />
             <Route path="profile" element={<Profile />} />
+            <Route path="help" element={<HelpSupport />} />
           </Route>
         </Route>
 

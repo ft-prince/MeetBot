@@ -91,9 +91,9 @@ export function Calendar() {
       <Topbar
         title="Calendar"
         subtitle="Past, live, and upcoming meetings from your Google Calendar"
-        right={<button onClick={sync} disabled={syncing} className="btn btn-primary btn-sm">{syncing ? 'Syncing…' : '🔄 Sync Calendar'}</button>}
+        right={<button onClick={sync} disabled={syncing} className="btn btn-primary btn-sm whitespace-nowrap">{syncing ? 'Syncing…' : '🔄 Sync'}</button>}
       />
-      <div className="p-8 flex-1">
+      <div className="p-4 sm:p-8 flex-1">
         {!user ? (
           <div className="bg-accent-light border border-accent/20 rounded-lg px-4 py-3 text-sm text-amber-800">
             <strong>Connect your Google account</strong> to sync upcoming meetings and enable auto-join.
@@ -154,27 +154,35 @@ function EventRow({
   const attendeeList = (ev.attendees || []).filter(a => a.name || a.email)
   const attendees = attendeeList.slice(0, 3).map(a => a.name || a.email).join(', ') +
     (attendeeList.length > 3 ? ` +${attendeeList.length - 3} more` : '')
-  const isClickable = ev.meetingId !== null   // past or live with a recording can be opened
+  const isClickable = ev.meetingId !== null
 
   return (
     <div
       className={
-        'card px-5 py-4 flex items-center gap-4 transition-shadow ' +
+        'card px-4 py-3 sm:px-5 sm:py-4 flex flex-col sm:flex-row sm:items-center gap-3 transition-shadow ' +
         (isClickable ? 'cursor-pointer hover:shadow-card-hover' : 'hover:shadow-card-hover')
       }
       onClick={isClickable ? () => onOpen(ev.meetingId!) : undefined}
     >
-      <div className="flex-shrink-0 text-center bg-accent-light rounded-lg px-2.5 py-2 min-w-[64px]">
-        <div className="text-[10px] font-semibold text-accent uppercase">{fmtDate(start)}</div>
-        <div className="text-base font-bold text-accent">{fmtTimeOfDay(start)}</div>
+      {/* Date + title row */}
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <div className="flex-shrink-0 text-center bg-accent-light rounded-lg px-2.5 py-2 min-w-[60px]">
+          <div className="text-[10px] font-semibold text-accent uppercase">{fmtDate(start)}</div>
+          <div className="text-sm font-bold text-accent">{fmtTimeOfDay(start)}</div>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold truncate">{ev.title}</div>
+          {attendees && (
+            <div className="text-xs text-muted mt-0.5 truncate">👥 {attendees}</div>
+          )}
+        </div>
       </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-semibold truncate">{ev.title}</div>
-        {attendees && (
-          <div className="text-xs text-muted mt-0.5">👥 {attendees}</div>
-        )}
-      </div>
-      <div className="flex items-center gap-3 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+
+      {/* Actions row — stopPropagation so clicks on buttons don't trigger the card open */}
+      <div
+        className="flex items-center gap-2 flex-shrink-0 flex-wrap"
+        onClick={(e) => e.stopPropagation()}
+      >
         {status === 'upcoming' && (
           <>
             <div className="flex items-center gap-1.5 text-xs text-muted">

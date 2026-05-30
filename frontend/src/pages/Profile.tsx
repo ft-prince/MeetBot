@@ -47,7 +47,7 @@ export function Profile() {
   return (
     <>
       <Topbar title="Profile" subtitle="Account settings and preferences" />
-      <div className="p-8 flex-1">
+      <div className="p-4 sm:p-8 flex-1">
         <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6 items-start">
           {/* User card */}
           <div className="card p-7">

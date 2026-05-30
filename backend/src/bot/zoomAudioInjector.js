@@ -1,314 +1,331 @@
-/**
- * zoomAudioInjector.js — Zoom Web Client edition (loopback capture)
- *
- * WHY THIS APPROACH:
- * Zoom Web Client does NOT use RTCPeerConnection.addTrack() for incoming audio.
- * It uses a proprietary audio engine (Zoom's own WASM/SDK) that decodes audio
- * internally and renders it directly to an AudioContext destination — meaning
- * no 'track' event ever fires on any RTCPeerConnection for received audio.
- *
- * SOLUTION:
- * We tap the AudioContext.destination itself using a MediaStreamDestinationNode
- * patched in before Zoom creates its AudioContext. Every sound Zoom plays
- * (all participants mixed) flows through this tap and gets sent as PCM to the bot.
- *
- * SPEAKER DETECTION:
- * Since we get mixed audio, we use Zoom's active-speaker DOM events and
- * participant panel to emit speaker_start/speaker_end events separately.
- *
- * ARCHITECTURE:
- *   Zoom AudioContext → [our tap node] → MediaStreamDestination
- *                                      → AudioWorklet (PCMSender)
- *                                      → noteAISendTrackAudio(samples, 'mixed')
- */
+// Injected into the Zoom web client by Playwright (runs before Zoom's JS loads).
+//
+// Zoom has TWO very different audio delivery paths depending on the account
+// tier / server (us04 vs us05) and the deployed client build:
+//
+//   A) Legacy WebRTC (often us04, free tier):
+//      Each remote participant arrives as its own RTCPeerConnection audio track —
+//      exactly like Google Meet. Capturing only one track loses everyone else.
+//
+//   B) Modern WASM client (often us05, paid):
+//      Remote audio is decoded in a worker and rendered through the Web Audio
+//      graph (AudioNode → destination) or an <audio>.srcObject. There is no
+//      per-participant track at all — only one mixed playback stream.
+//
+// We support BOTH:
+//   • For path A (`rtc`)  → forward every track independently with its own id.
+//     Per-track names come from DOM co-occurrence (loud track + DOM active
+//     speaker → bind trackId → name) and flow via noteAISendTrackInfo.
+//   • For path B (`audiocontext`/`srcObject`) → collect taps as candidates,
+//     pick the one with real voice energy, forward ONE mixed stream
+//     (trackId = 'zoom-mixed'). The backend tags each segment with the live
+//     active-speaker from the DOM.
+//
+// Bridges exposed by zoomBot.ts:
+//   window.noteAISendTrackAudio(samples, trackId)
+//   window.noteAISendTrackInfo (trackId, name)
+//   window.noteAISendEvent     (json)
 
 ;(function () {
-  'use strict'
+  const SAMPLE_RATE = 16000
+  const CHUNK_SAMPLES = SAMPLE_RATE * 0.15
+  const MIX_TRACK_ID = 'zoom-mixed'
+  const ENERGY_THRESHOLD = 6
+  const SELECT_FALLBACK_MS = 2500
+  const COOCCUR_LOCK = 3
+  const LOUD_THRESHOLD_RTC = 8
 
-  const SAMPLE_RATE   = 16000
-  const CHUNK_SAMPLES = SAMPLE_RATE * 0.2   // 200ms chunks
-  const SPEAK_THRESHOLD = 8
-  const SPEAKER_POLL_MS = 300
+  let captureCtx = null
+  const seenTrackIds = new Set()
 
-  window.__noteAIInjectorLoaded = true
-  window.__patchedPCs           = []
-  window.__noteAITrackList      = []
+  // Path A — per-participant RTC tracks
+  const rtcTracks = new Map() // trackId → { source, analyser, data }
+  const trackName = new Map() // trackId → { name, locked: true }
+  const cooccur = new Map()   // "<trackId>::<name>" → consecutive matches
 
-  const meetingId = (function () {
-    const m = location.pathname.match(/\/wc\/(\d+)\//)
-    return m ? m[1] : `zoom-${Date.now()}`
-  })()
+  // Path B — mixed-stream candidates (audiocontext / srcObject)
+  const mixCandidates = new Map() // trackId → { source, analyser, data }
+  let mixActive = null
+  let mixFirstSeenAt = 0
 
-  // ── Patch AudioContext to intercept Zoom's audio graph ──────────────────
-  // We wrap AudioContext so that when Zoom creates one, we immediately attach
-  // a tap node to its destination before any audio starts flowing.
-
-  // Track ALL AudioContexts — Zoom creates multiple across its lifecycle.
-  // The first one (pre-join) is the camera preview; the real meeting audio
-  // context is created later. We tap every one >= 16kHz and let the worklet
-  // send audio — only the one actually carrying speech will produce output.
-  const allContexts = []
-  const OrigAudioContext = window.AudioContext || window.webkitAudioContext
-
-  class PatchedAudioContext extends OrigAudioContext {
-    constructor (...args) {
-      super(...args)
-      if (this.sampleRate >= 16000) {
-        allContexts.push(this)
-        console.log('[NoteAI] AudioContext #' + allContexts.length + ' created — sample rate:', this.sampleRate)
-        // Tap with increasing delays to catch both early and late contexts
-        setTimeout(() => tapAudioContext(this, allContexts.length), 200)
-        setTimeout(() => tapAudioContext(this, allContexts.length), 2000)
-        setTimeout(() => tapAudioContext(this, allContexts.length), 5000)
-      }
+  function ensureCaptureCtx () {
+    if (!captureCtx) {
+      captureCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE })
     }
+    return captureCtx
   }
 
-  window.AudioContext = PatchedAudioContext
-  if (window.webkitAudioContext) window.webkitAudioContext = PatchedAudioContext
-
-  // Also patch RTCPeerConnection for the __patchedPCs sentinel (used by zoomBot.ts)
-  const OrigRTC = window.RTCPeerConnection
-  function PatchedRTC (...args) {
-    const pc = new OrigRTC(...args)
-    window.__patchedPCs.push(pc)
-    return pc
-  }
-  PatchedRTC.prototype = OrigRTC.prototype
-  Object.assign(PatchedRTC, OrigRTC)
-  window.RTCPeerConnection = PatchedRTC
-
-  // ── Audio tap ────────────────────────────────────────────────────────────
-
-  const tappedContexts = new Set()
-
-  async function tapAudioContext (ctx, ctxIndex) {
-    // Only tap each context once
-    if (tappedContexts.has(ctx)) return
-    tappedContexts.add(ctx)
-
-    console.log('[NoteAI] Tapping AudioContext #' + ctxIndex + ' state:', ctx.state)
-
-    try {
-      if (ctx.state === 'suspended') await ctx.resume()
-      if (ctx.state === 'closed') {
-        console.log('[NoteAI] AudioContext #' + ctxIndex + ' is closed — skipping')
-        return
-      }
-
-      // Build worklet inline
-      const workletCode = `
+  // ── AudioWorklet (preferred) with ScriptProcessor fallback ────────────────
+  let workletReady = null
+  function initWorklet (ctx) {
+    if (workletReady) return workletReady
+    workletReady = (async () => {
+      const code = `
         class PCMSender extends AudioWorkletProcessor {
-          constructor () {
-            super()
-            this._buf       = []
-            this._n         = 0
-            this._chunkSize = ${CHUNK_SAMPLES}
-            this._ratio     = sampleRate / 16000
-            this._pos       = 0
-            this._dbgCount  = 0
-          }
+          constructor () { super(); this._buf = []; this._n = 0 }
           process (inputs) {
-            const ch = inputs[0]?.[0]
-            if (!ch) return true
-
-            // DEBUG: log audio level every ~1s (128 samples per call, ~375 calls/s at 48k)
-            this._dbgCount++
-            if (this._dbgCount % 350 === 0) {
-              let sum = 0, peak = 0
-              for (let i = 0; i < ch.length; i++) {
-                const a = Math.abs(ch[i])
-                sum += a; if (a > peak) peak = a
-              }
-              console.log('[NoteAI] audio level — avg:', (sum / ch.length).toFixed(5), 'peak:', peak.toFixed(5))
+            const ch = inputs[0] && inputs[0][0]; if (!ch) return true
+            const i16 = new Int16Array(ch.length)
+            for (let i = 0; i < ch.length; i++) {
+              const v = Math.max(-1, Math.min(1, ch[i]))
+              i16[i] = v < 0 ? v * 32768 : v * 32767
             }
-
-            const out = []
-            while (this._pos < ch.length) {
-              const v = Math.max(-1, Math.min(1, ch[Math.floor(this._pos)]))
-              out.push(v < 0 ? v * 32768 : v * 32767)
-              this._pos += this._ratio
-            }
-            this._pos -= ch.length
-            if (out.length === 0) return true
-            const i16 = new Int16Array(out)
-            this._buf.push(i16)
-            this._n += i16.length
-            if (this._n >= this._chunkSize) {
-              const merged = new Int16Array(this._n)
-              let off = 0
-              for (const b of this._buf) { merged.set(b, off); off += b.length }
-              this.port.postMessage({ samples: Array.from(merged) })
-              this._buf = []
-              this._n   = 0
+            this._buf.push(i16); this._n += i16.length
+            if (this._n >= ${CHUNK_SAMPLES}) {
+              const out = new Int16Array(this._n); let off = 0
+              for (const b of this._buf) { out.set(b, off); off += b.length }
+              this.port.postMessage(out, [out.buffer]); this._buf = []; this._n = 0
             }
             return true
           }
         }
-        registerProcessor('zoom-pcm-sender', PCMSender)
+        registerProcessor('pcm-sender', PCMSender)
       `
-      const blob = new Blob([workletCode], { type: 'application/javascript' })
-      const url  = URL.createObjectURL(blob)
-      await ctx.audioWorklet.addModule(url)
-      URL.revokeObjectURL(url)
-
-      // Create a gain node connected between destination and our worklet
-      // We use a MediaStreamDestinationNode to tap what flows into destination
-      const tapDest   = ctx.createMediaStreamDestination()
-      const tapSource = ctx.createMediaStreamSource(tapDest.stream)
-      const worklet   = new AudioWorkletNode(ctx, 'zoom-pcm-sender')
-
-      const trackId = 'mixed-' + ctxIndex
-
-      worklet.port.onmessage = (e) => {
-        if (window.noteAISendTrackAudio) {
-          window.noteAISendTrackAudio(e.data.samples, trackId)
-        }
+      const url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
+      try {
+        await ctx.audioWorklet.addModule(url)
+        console.log('[NoteAI] using AudioWorklet capture')
+        return true
+      } catch (e) {
+        console.log('[NoteAI] AudioWorklet blocked, using ScriptProcessor:', e && e.message)
+        return false
+      } finally {
+        URL.revokeObjectURL(url)
       }
+    })()
+    return workletReady
+  }
 
-      // Analyser for VAD / speaker detection
-      const analyser  = ctx.createAnalyser()
+  // Build a PCM pipeline on `source` that posts chunks tagged with `trackId`.
+  async function startForwarding (source, trackId) {
+    const ctx = captureCtx
+    const ok = await initWorklet(ctx)
+    if (ok) {
+      const node = new AudioWorkletNode(ctx, 'pcm-sender')
+      node.port.onmessage = (e) => {
+        if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(Array.from(new Int16Array(e.data)), trackId)
+      }
+      source.connect(node)
+      return
+    }
+    const proc = ctx.createScriptProcessor(2048, 1, 1)
+    let buf = [], n = 0
+    proc.onaudioprocess = (e) => {
+      const ch = e.inputBuffer.getChannelData(0)
+      const i16 = new Int16Array(ch.length)
+      for (let i = 0; i < ch.length; i++) {
+        const v = Math.max(-1, Math.min(1, ch[i]))
+        i16[i] = v < 0 ? v * 32768 : v * 32767
+      }
+      buf.push(i16); n += i16.length
+      if (n >= CHUNK_SAMPLES) {
+        const out = new Int16Array(n); let off = 0
+        for (const b of buf) { out.set(b, off); off += b.length }
+        if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(Array.from(out), trackId)
+        buf = []; n = 0
+      }
+    }
+    const mute = ctx.createGain(); mute.gain.value = 0
+    source.connect(proc); proc.connect(mute); mute.connect(ctx.destination)
+  }
+
+  // ── captureTrack: dispatches into the path that matches the source ────────
+  function captureTrack (track, sourceLabel) {
+    try {
+      if (!track || track.kind !== 'audio' || seenTrackIds.has(track.id)) return
+      seenTrackIds.add(track.id)
+
+      const ctx = ensureCaptureCtx()
+      const source = ctx.createMediaStreamSource(new MediaStream([track]))
+      const analyser = ctx.createAnalyser()
       analyser.fftSize = 512
-      analyser.smoothingTimeConstant = 0.4
+      source.connect(analyser)
+      const slot = { source, analyser, data: new Uint8Array(analyser.frequencyBinCount) }
 
-      tapSource.connect(worklet)
-      tapSource.connect(analyser)
-      worklet.connect(ctx.destination)
-
-      // Store analyser for speaker polling
-      window.__noteAIAnalyser  = analyser
-      window.__noteAIAnalyserData = new Uint8Array(analyser.frequencyBinCount)
-
-      // ── The key: reroute ctx.destination through our tap ────────────────
-      // We can't directly intercept ctx.destination (it's read-only), but we
-      // can patch createMediaStreamSource / createGain to insert our tap.
-      // Instead, we use a ChannelSplitterNode trick:
-      // Any node that connects to ctx.destination also connects to tapDest.
-      //
-      // Patch ctx.createGain, ctx.createMediaStreamSource, etc. to
-      // auto-connect to tapDest as well as destination.
-      const origConnect = AudioNode.prototype.connect
-      AudioNode.prototype.connect = function (target, ...args) {
-        const result = origConnect.call(this, target, ...args)
-        // If this node is connecting to the main destination, also tap it
-        if (target === ctx.destination && this !== worklet && this !== tapSource) {
-          try { origConnect.call(this, tapDest, ...args) } catch {}
-        }
-        return result
+      if (sourceLabel === 'rtc') {
+        // Per-participant track — forward each independently (Meet model).
+        rtcTracks.set(track.id, slot)
+        console.log('[NoteAI] RTC participant track:', track.id.slice(0, 8))
+        startForwarding(source, track.id)
+      } else {
+        // Mixed-stream tap — one will be chosen by energy after a short window.
+        mixCandidates.set(track.id, slot)
+        if (!mixFirstSeenAt) mixFirstSeenAt = Date.now()
+        console.log('[NoteAI] candidate Zoom audio track via ' + sourceLabel + ':', track.id.slice(0, 8))
       }
-
-      window.__noteAITrackList.push({ trackId, index: ctxIndex - 1 })
-      if (window.noteAISendTrackInfo) window.noteAISendTrackInfo(trackId, 'mixed')
-
-      console.log('[NoteAI] AudioContext #' + ctxIndex + ' tap installed ✓ trackId:', trackId)
-
-      // Start speaker detection
-      setInterval(checkSpeakers, SPEAKER_POLL_MS)
-
     } catch (err) {
-      console.error('[NoteAI] tapAudioContext failed:', err)
+      console.log('[NoteAI] captureTrack error:', err && err.message)
     }
   }
 
-  // ── Speaker detection ────────────────────────────────────────────────────
+  // Energy-pick one mixed candidate (only when there are NO RTC tracks — they
+  // already carry all participants and we must not double-transcribe).
+  function selectMixActive () {
+    if (mixActive || mixCandidates.size === 0) return
+    if (rtcTracks.size > 0) return
 
-  const speakingNow = new Map()
+    let bestId = null, bestLevel = 0
+    for (const [id, c] of mixCandidates) {
+      c.analyser.getByteFrequencyData(c.data)
+      let sum = 0
+      for (let i = 0; i < c.data.length; i++) sum += c.data[i]
+      const level = sum / c.data.length
+      if (level > bestLevel) { bestLevel = level; bestId = id }
+    }
+    const elapsed = mixFirstSeenAt && Date.now() - mixFirstSeenAt > SELECT_FALLBACK_MS
+    if (bestId && (bestLevel >= ENERGY_THRESHOLD || elapsed)) {
+      mixActive = bestId
+      const c = mixCandidates.get(bestId)
+      console.log('[NoteAI] forwarding Zoom audio (mixed) from', bestId.slice(0, 8), '(level', bestLevel.toFixed(1) + ')')
+      startForwarding(c.source, MIX_TRACK_ID)
+    }
+  }
+
+  // Per-RTC-track co-occurrence: when exactly ONE track is loud while the DOM
+  // shows active speaker = X for several consecutive samples, bind that track
+  // to X and tell the backend (noteAISendTrackInfo). Locked tracks stay bound.
+  function pollRtcCooccurrence () {
+    if (rtcTracks.size === 0) return
+    const loud = []
+    for (const [id, t] of rtcTracks) {
+      t.analyser.getByteFrequencyData(t.data)
+      let sum = 0
+      for (let i = 0; i < t.data.length; i++) sum += t.data[i]
+      const level = sum / t.data.length
+      if (level >= LOUD_THRESHOLD_RTC) loud.push(id)
+    }
+    if (loud.length !== 1) return
+    const trackId = loud[0]
+    if (trackName.get(trackId)?.locked) return
+    const name = getZoomActiveSpeaker()
+    if (!name) return
+    const key = trackId + '::' + name
+    const c = (cooccur.get(key) || 0) + 1
+    cooccur.set(key, c)
+    if (c >= COOCCUR_LOCK) {
+      trackName.set(trackId, { name, locked: true })
+      console.log('[NoteAI] track', trackId.slice(0, 8), '→', name, '(co-occurrence)')
+      if (window.noteAISendTrackInfo) window.noteAISendTrackInfo(trackId, name)
+    }
+  }
+
+  // ── Path 1: Web Audio output tap (WASM client) ────────────────────────────
+  try {
+    const origConnect = AudioNode.prototype.connect
+    AudioNode.prototype.connect = function (target) {
+      try {
+        const ctx = this.context
+        const isDestination =
+          (typeof AudioDestinationNode !== 'undefined' && target instanceof AudioDestinationNode) ||
+          (ctx && target === ctx.destination)
+        if (isDestination && ctx && typeof ctx.createMediaStreamDestination === 'function') {
+          if (!ctx.__noteAITap) {
+            ctx.__noteAITap = ctx.createMediaStreamDestination()
+            const t = ctx.__noteAITap.stream.getAudioTracks()[0]
+            if (t) captureTrack(t, 'audiocontext')
+          }
+          try { origConnect.call(this, ctx.__noteAITap) } catch {}
+        }
+      } catch {}
+      return origConnect.apply(this, arguments)
+    }
+  } catch {}
+
+  // ── Path 2: <audio>.srcObject ─────────────────────────────────────────────
+  try {
+    const proto = HTMLMediaElement.prototype
+    const desc = Object.getOwnPropertyDescriptor(proto, 'srcObject')
+    if (desc && desc.set && desc.configurable) {
+      Object.defineProperty(proto, 'srcObject', {
+        configurable: true,
+        enumerable: desc.enumerable,
+        get: desc.get,
+        set: function (stream) {
+          try {
+            if (stream && typeof stream.getAudioTracks === 'function') {
+              for (const t of stream.getAudioTracks()) captureTrack(t, 'srcObject')
+            }
+          } catch {}
+          return desc.set.call(this, stream)
+        },
+      })
+    }
+  } catch {}
+
+  // ── Path 3: legacy RTCPeerConnection per-participant tracks ───────────────
+  try {
+    if (typeof window.RTCPeerConnection !== 'undefined') {
+      const OrigRTC = window.RTCPeerConnection
+      function applyPatch () {
+        function PatchedRTC () {
+          const pc = new OrigRTC(...arguments)
+          pc.addEventListener('track', function (e) {
+            if (e.track && e.track.kind === 'audio') captureTrack(e.track, 'rtc')
+          })
+          return pc
+        }
+        PatchedRTC.prototype = OrigRTC.prototype
+        Object.assign(PatchedRTC, OrigRTC)
+        PatchedRTC.__noteAIPatched = true
+        window.RTCPeerConnection = PatchedRTC
+      }
+      applyPatch()
+      setInterval(function () {
+        if (!window.RTCPeerConnection.__noteAIPatched) applyPatch()
+      }, 500)
+    }
+  } catch {}
+
+  setInterval(selectMixActive, 250)
+  setInterval(pollRtcCooccurrence, 300)
+
+  // ── DOM active-speaker → speaker_start / speaker_end ──────────────────────
+  function cleanName (raw) {
+    let name = (raw || '').trim()
+    name = name.replace(/,\s*(unmuted|muted|speaking|host|co-host|guest).*$/i, '').trim()
+    if (name.length >= 4 && name.length % 2 === 0) {
+      const half = name.length / 2
+      if (name.slice(0, half) === name.slice(half)) name = name.slice(0, half)
+    }
+    if (!name || name.length < 2 || /^note|recorder/i.test(name)) return null
+    return name
+  }
+
+  function getZoomActiveSpeaker () {
+    const selectors = [
+      '.speaker-active-container__video-frame',
+      '.speaker-active-container__wrap',
+      '[class*="speaker-active-container"] [class*="avatar-name"]',
+      '[class*="active-speaker"] [class*="name"]',
+    ]
+    for (const sel of selectors) {
+      try {
+        const el = document.querySelector(sel)
+        if (el) {
+          const name = cleanName(el.textContent || el.getAttribute('aria-label'))
+          if (name) return name
+        }
+      } catch {}
+    }
+    return null
+  }
 
   function sendEvent (payload) {
     if (window.noteAISendEvent) window.noteAISendEvent(JSON.stringify(payload))
   }
 
-  function getActiveSpeakerFromDOM () {
-    // Zoom highlights the active speaker tile — try multiple selectors
-    const selectors = [
-      '[class*="speaker-active"] [class*="display-name"]',
-      '[class*="active-speaker"] [class*="display-name"]',
-      '.speaker-active-container__display-name',
-      '[class*="speaking"] [class*="name"]',
-    ]
-    for (const sel of selectors) {
-      const el = document.querySelector(sel)
-      const name = el?.textContent?.trim()
-      if (name && name.length > 1 && !/^note|recorder/i.test(name)) return name
-    }
-    return null
+  let lastSpeaker = null
+  function pollActiveSpeaker () {
+    let name = null
+    try { name = getZoomActiveSpeaker() } catch {}
+    if (name === lastSpeaker) return
+    if (lastSpeaker) sendEvent({ type: 'speaker_end', name: lastSpeaker, endMs: Date.now() })
+    if (name) { sendEvent({ type: 'speaker_start', name, startMs: Date.now() }); console.log('[NoteAI] active speaker:', name) }
+    lastSpeaker = name
   }
 
-  function getParticipantNames () {
-  const selectors = [
-    '.video-avatar__avatar-name',
-    'span.participant-item__display-name',
-    '.participants-item__display-name',
-    '[class*="participants-item__display-name"]',
-    '[class*="participant-item__name"]',
-  ]
-  const allNames = []
-  for (const sel of selectors) {
-    for (const el of Array.from(document.querySelectorAll(sel))) {
-      const name = (el.textContent || '').replace(/\s*\([^)]*\)\s*$/, '').trim()
-      if (name && name.length > 1 && name.length < 60 && !/^note|recorder/i.test(name))
-        allNames.push(name)
-    }
-  }
-  return [...new Set(allNames)]
-}
-
-  function checkSpeakers () {
-    const analyser  = window.__noteAIAnalyser
-    const dataArray = window.__noteAIAnalyserData
-    if (!analyser || !dataArray) return
-
-    analyser.getByteFrequencyData(dataArray)
-    const level = dataArray.reduce((a, b) => a + b, 0) / dataArray.length
-
-    if (level >= SPEAK_THRESHOLD) {
-      // Audio is flowing — find who's speaking from DOM
-      const activeName = getActiveSpeakerFromDOM()
-      if (activeName && !speakingNow.has(activeName)) {
-        speakingNow.set(activeName, Date.now())
-        sendEvent({ type: 'speaker_start', name: activeName, startMs: Date.now(), meetingId })
-      }
-    } else {
-      // Silence — end all active speakers
-      for (const [name] of speakingNow) {
-        speakingNow.delete(name)
-        sendEvent({ type: 'speaker_end', name, endMs: Date.now(), meetingId })
-      }
-    }
-
-    // Periodically broadcast known participant names
-    if (Math.random() < 0.01) {  // ~1% of polls = every ~30s
-      const names = getParticipantNames()
-      if (names.length) {
-        sendEvent({ type: 'participant_names_snapshot', names, meetingId })
-      }
-    }
-  }
-
-  // ── Wait for Zoom meeting UI then start participant polling ──────────────
-
-  const waitForMeetingUI = setInterval(() => {
-    const inMeeting = (
-      document.querySelector('.footer-button-base__button') ||
-      document.querySelector('[class*="meeting-client"]')   ||
-      document.querySelector('.meeting-app')
-    )
-    if (inMeeting) {
-      clearInterval(waitForMeetingUI)
-      console.log('[NoteAI] Zoom meeting UI detected — participant polling started')
-
-      // Emit participant snapshot every 5s
-      setInterval(() => {
-        const names = getParticipantNames()
-        if (names.length) {
-          names.forEach(name => {
-            sendEvent({ type: 'participant_known', name, meetingId })
-          })
-        }
-      }, 5000)
-    }
-  }, 1500)
-
-  console.log('[NoteAI] audioInjector (Zoom loopback) loaded ✓')
-
+  setTimeout(function () {
+    console.log('[NoteAI] Zoom speaker polling started')
+    setInterval(pollActiveSpeaker, 300)
+  }, 5000)
 })()

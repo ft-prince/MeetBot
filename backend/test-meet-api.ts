@@ -83,14 +83,8 @@ async function run() {
   auth.setCredentials({ access_token: token })
   const meet = google.meet({ version: 'v2', auth })
 
-  // 1 ── Spaces (meetings the user has created/owns)
-  try {
-    const res = await meet.spaces.list({} as any)
-    const spaces = (res.data as any).spaces || []
-    log('spaces.list', { count: spaces.length, sample: spaces.slice(0, 3) })
-  } catch (e: any) {
-    log('spaces.list ERROR', e.message)
-  }
+  // 1 ── Spaces: Meet API v2 has no spaces.list — only get/create/patch.
+  //       Use conferenceRecords.list below to fetch past/ongoing meetings.
 
   // 2 ── Conference records (past & in-progress meetings)
   let conferenceRecordName: string | undefined

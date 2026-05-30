@@ -1,176 +1,185 @@
 import { MeetBot } from './meetBot';
 import { ZoomBot } from './zoomBot';
 import { RecallBot } from './recallBot';
+import { config } from '../config';
 import {
   broadcastToMeeting,
   createBotSession,
-  createRecallSession,
   endBotSession,
   endBotSessionNoSummary,
-  endRecallSession,
+  forwardAudio,
   forwardEvent,
   forwardTrackAudio,
+  getSessionMeetingId,
   setTrackName,
 } from '../ws/ingestHandler';
+import { saveSegment } from '../services/meetingService';
+import type { IdentifiedSegment } from '../services/speakerCorrelator';
 
-const activeBots = new Map<string, MeetBot | ZoomBot | RecallBot>();
+// MeetBot and ZoomBot share an identical start()/stop() callback contract, so the
+// same in-house pipeline wiring drives both.
+type BrowserBot = MeetBot | ZoomBot;
 
-function isZoomUrl(url: string): boolean {
-  return /zoom\.us\//i.test(url);
-}
-
-function isTeamsUrl(url: string): boolean {
-  // Covers teams.microsoft.com, teams.live.com, and *.teams.microsoft.us (gov)
-  return /teams\.(microsoft|live)\.(com|us)\//i.test(url);
-}
-
-function isMeetUrl(url: string): boolean {
-  return /meet\.google\.com\//i.test(url);
-}
-
-// All meeting platforms now go through Recall (managed cloud bot).
-// The self-hosted MeetBot is kept in the codebase as a fallback but is not used.
-function isRecallPlatform(url: string): boolean {
-  return isZoomUrl(url) || isTeamsUrl(url) || isMeetUrl(url);
-}
+const activeBots = new Map<string, BrowserBot>();
+const activeRecallBots = new Map<string, RecallBot>();
 
 function extractMeetingId(url: string): string {
-  // Zoom: zoom.us/j/1234567890 or zoom.us/wc/1234567890/join
-  const zoomMatch = url.match(/\/(?:j|wc)\/(\d{9,11})/);
-  if (zoomMatch) return `zoom-${zoomMatch[1]}`;
-
-  // Teams meetup-join: …/meetup-join/19%3ameeting_<id>%40thread.v2/…
-  const teamsMeetupMatch = url.match(/meetup-join\/([^/?]+)/i);
-  if (teamsMeetupMatch) {
-    // URL-decoded portion has %3a/%40 — strip non-alphanumerics for a stable code
-    const safe = decodeURIComponent(teamsMeetupMatch[1]).replace(/[^a-z0-9]/gi, '').slice(0, 32);
-    return `teams-${safe}`;
-  }
-  // Teams Live shareable link: teams.live.com/meet/<digits>
-  const teamsLiveMatch = url.match(/teams\.live\.com\/meet\/(\d+)/i);
-  if (teamsLiveMatch) return `teams-${teamsLiveMatch[1]}`;
-
-  // Google Meet: meet.google.com/xxx-xxxx-xxx
   const meetMatch = url.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
-  return meetMatch ? meetMatch[1] : `bot-${Date.now()}`;
+  if (meetMatch) return meetMatch[1];
+  const zoomMatch = url.match(/\/(?:j|wc\/join)\/(\d+)/);
+  if (zoomMatch) return `zoom-${zoomMatch[1]}`;
+  return `bot-${Date.now()}`;
+}
+
+function isZoomUrl(url: string): boolean {
+  return /zoom\.us|zoomgov\.com/i.test(url);
 }
 
 export const botManager = {
   async launch(meetingUrl: string, userId?: string): Promise<string> {
     const meetingId = extractMeetingId(meetingUrl);
-    if (activeBots.has(meetingId)) return meetingId;
+    if (activeBots.has(meetingId) || activeRecallBots.has(meetingId)) return meetingId;
 
-    if (isRecallPlatform(meetingUrl)) {
-      // ── Google Meet / Zoom / Teams → Recall cloud bot ────────────────────
-      // Recall handles audio capture, speaker attribution, and transcription
-      // in the cloud. Transcript is fetched after the meeting ends via
-      // endRecallSession → saved to DB → AI pipeline runs.
-      const bot = new RecallBot();
-      activeBots.set(meetingId, bot);
+    const zoom = isZoomUrl(meetingUrl);
 
-      await createRecallSession(meetingId, userId);
-
-      bot.start({
-        meetingUrl,
-        meetingCode: meetingId,
-        displayName: 'NoteAI Recorder',
-
-        onJoined: () => {
-          broadcastToMeeting(meetingId, { type: 'bot.joined', meetingId });
-          console.log('[botManager] Recall bot joined', meetingId);
-        },
-
-        onEnded: () => {
-          activeBots.delete(meetingId);
-          broadcastToMeeting(meetingId, { type: 'meeting.ended', meetingId });
-          // Recall path: fetch final transcript from cloud → save → summary
-          endRecallSession(meetingId, bot.lastBotId).catch(console.error);
-        },
-
-        onError: (err) => {
-          console.error('[botManager] Recall bot error:', err);
-          activeBots.delete(meetingId);
-          broadcastToMeeting(meetingId, { type: 'bot.error', meetingId, error: err.message });
-          endRecallSession(meetingId, bot.lastBotId).catch(console.error);
-        },
-      }).catch((err: Error) => {
-        console.error('[botManager] Failed to start Recall bot:', err);
-        activeBots.delete(meetingId);
-      });
-    } else {
-      // ── Google Meet → self-hosted Playwright bot ─────────────────────────
-      const bot = new MeetBot();
-      activeBots.set(meetingId, bot);
-
-      await createBotSession(meetingId, userId);
-
-      bot.start({
-        meetingUrl,
-        displayName: 'NoteAI Recorder',
-
-        onTrackAudio: (chunk, trackId) => {
-          forwardTrackAudio(meetingId, chunk, trackId);
-        },
-
-        onTrackInfo: (trackId, name) => {
-          setTrackName(meetingId, trackId, name);
-        },
-
-        onSpeakerEvent: (event) => {
-          forwardEvent(meetingId, event);
-        },
-
-        onJoined: () => {
-          broadcastToMeeting(meetingId, { type: 'bot.joined', meetingId });
-          console.log('[botManager] Meet bot joined', meetingId);
-        },
-
-        onEnded: () => {
-          activeBots.delete(meetingId);
-          broadcastToMeeting(meetingId, { type: 'meeting.ended', meetingId });
-          endBotSession(meetingId).catch(console.error);
-        },
-
-        onError: (err) => {
-          console.error('[botManager] Meet bot error:', err);
-          activeBots.delete(meetingId);
-          broadcastToMeeting(meetingId, { type: 'bot.error', meetingId, error: err.message });
-          endBotSession(meetingId).catch(console.error);
-        },
-      }).catch((err: Error) => {
-        if (!err.message?.includes('closed') && !err.message?.includes('Target')) {
-          console.error('[botManager] Failed to start Meet bot:', err);
-        }
-        activeBots.delete(meetingId);
-      });
+    // Zoom falls back to the Recall cloud bot only when explicitly opted in.
+    if (zoom && config.zoomBotMode === 'recall') {
+      return launchRecallBot(meetingId, meetingUrl, userId);
     }
+
+    // In-house path: ZoomBot for Zoom URLs, MeetBot for Google Meet.
+    const bot: BrowserBot = zoom ? new ZoomBot() : new MeetBot();
+    activeBots.set(meetingId, bot);
+
+    await createBotSession(meetingId, userId);
+
+    // Audio routing:
+    //   • Google Meet: per-participant WebRTC tracks → forwardTrackAudio (one
+    //     Deepgram per track, named via DOM scrape).
+    //   • Zoom WASM client (us05, paid): one mixed Web Audio tap → forwardAudio
+    //     (correlator path), tagged with the live active speaker. The injector
+    //     signals this path by using the synthetic trackId 'zoom-mixed'.
+    //   • Zoom legacy WebRTC (us04, free): per-participant RTC tracks just like
+    //     Meet → forwardTrackAudio, names resolved via co-occurrence in the
+    //     injector and delivered through onTrackInfo / setTrackName.
+    bot.start({
+      meetingUrl,
+      displayName: 'NoteAI Recorder',
+
+      onTrackAudio: (chunk, trackId) => {
+        if (trackId === 'zoom-mixed') {
+          forwardAudio(meetingId, chunk);
+        } else {
+          forwardTrackAudio(meetingId, chunk, trackId);
+        }
+      },
+
+      onTrackInfo: (trackId, name) => {
+        setTrackName(meetingId, trackId, name);
+      },
+
+      onSpeakerEvent: (event) => {
+        forwardEvent(meetingId, event);
+      },
+
+      onJoined: () => {
+        broadcastToMeeting(meetingId, { type: 'bot.joined', meetingId });
+        console.log('[botManager] Bot joined', meetingId);
+      },
+
+      onEnded: () => {
+        activeBots.delete(meetingId);
+        broadcastToMeeting(meetingId, { type: 'meeting.ended', meetingId });
+        endBotSession(meetingId).catch(console.error);
+      },
+
+      onError: (err) => {
+        console.error('[botManager] Bot error:', err);
+        activeBots.delete(meetingId);
+        broadcastToMeeting(meetingId, { type: 'bot.error', meetingId, error: err.message });
+        endBotSession(meetingId).catch(console.error);
+      },
+    }).catch((err: Error) => {
+      if (!err.message?.includes('closed') && !err.message?.includes('Target')) {
+        console.error('[botManager] Failed to start bot:', err);
+      }
+      activeBots.delete(meetingId);
+    });
 
     return meetingId;
   },
 
-  // Graceful stop — leaves the meeting cleanly and generates AI summary.
   async stop(meetingId: string): Promise<void> {
+    if (activeRecallBots.has(meetingId)) {
+      const bot = activeRecallBots.get(meetingId)!;
+      activeRecallBots.delete(meetingId);
+      await bot.stop();
+      // endBotSession is called inside onEnded callback after transcript is fetched
+      return;
+    }
     const bot = activeBots.get(meetingId);
     activeBots.delete(meetingId);
-
-    if (bot instanceof RecallBot) {
-      // Capture botId BEFORE stop() nulls it, so we can fetch the final transcript
-      const recallBotId = bot.lastBotId;
-      await bot.stop();
-      await endRecallSession(meetingId, recallBotId);
-    } else {
-      await Promise.all([bot?.stop(), endBotSession(meetingId)]);
-    }
+    await Promise.all([bot?.stop(), endBotSession(meetingId)]);
   },
 
-  // Force-exit — kills the browser immediately, no summary generated.
   async exit(meetingId: string): Promise<void> {
+    if (activeRecallBots.has(meetingId)) {
+      const bot = activeRecallBots.get(meetingId)!;
+      activeRecallBots.delete(meetingId);
+      await bot.stop();
+      await endBotSessionNoSummary(meetingId);
+      return;
+    }
     const bot = activeBots.get(meetingId);
     activeBots.delete(meetingId);
     await Promise.all([bot?.stop(), endBotSessionNoSummary(meetingId)]);
   },
 
   active(): string[] {
-    return [...activeBots.keys()];
+    return [...activeBots.keys(), ...activeRecallBots.keys()];
   },
 };
+
+async function launchRecallBot(meetingId: string, meetingUrl: string, userId?: string): Promise<string> {
+  // createBotSession creates the DB meeting record and sets up the session so
+  // panel WebSocket clients can connect and receive broadcast events.
+  await createBotSession(meetingId, userId);
+
+  const bot = new RecallBot();
+  activeRecallBots.set(meetingId, bot);
+
+  bot.start(meetingUrl, 'NoteAI', {
+    onJoined: () => {
+      broadcastToMeeting(meetingId, { type: 'bot.joined', meetingId });
+      console.log('[botManager] Recall bot joined', meetingId);
+    },
+
+    onEnded: async (segments: IdentifiedSegment[]) => {
+      activeRecallBots.delete(meetingId);
+
+      const dbMeetingId = getSessionMeetingId(meetingId);
+      if (dbMeetingId && segments.length > 0) {
+        console.log(`[botManager] Saving ${segments.length} Recall segments for ${meetingId}`);
+        for (const seg of segments) {
+          await saveSegment(dbMeetingId, seg).catch(err =>
+            console.error('[botManager] saveSegment error:', err)
+          );
+        }
+      }
+
+      await endBotSession(meetingId);
+    },
+
+    onError: (err: Error) => {
+      console.error('[botManager] Recall bot error:', err);
+      activeRecallBots.delete(meetingId);
+      broadcastToMeeting(meetingId, { type: 'bot.error', meetingId, error: err.message });
+      endBotSession(meetingId).catch(console.error);
+    },
+  }).catch((err: Error) => {
+    console.error('[botManager] Failed to start Recall bot:', err);
+    activeRecallBots.delete(meetingId);
+  });
+
+  return meetingId;
+}

@@ -46,18 +46,52 @@ export function Tabs({ tabs, defaultId, onChange, renderContent }: Props) {
   const select = (id: string) => {
     setActive(id)
     onChange?.(id)
-    // Scroll the active tab into view
     const el = scrollRef.current
     if (!el) return
     const btn = el.querySelector<HTMLButtonElement>(`[data-tab="${id}"]`)
     btn?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
   }
 
+  const activeTab = tabs.find(t => t.id === active)
+
   return (
     <div className="card overflow-hidden">
-      {/* Tab strip */}
-      <div className="relative border-b border-gray-200 bg-app-bg flex items-stretch">
-        {/* Left scroll arrow */}
+
+      {/* ── Mobile tab picker (< sm) ─────────────────────────────────────── */}
+      <div className="sm:hidden border-b border-gray-200 bg-app-bg px-3 py-2.5">
+        <div className="relative">
+          {/* Chevron icon overlay */}
+          <div className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center">
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </div>
+          <select
+            value={active}
+            onChange={e => select(e.target.value)}
+            className="w-full appearance-none bg-white border border-gray-200 rounded-lg pl-3 pr-8 py-2 text-sm font-semibold text-ink focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent cursor-pointer"
+          >
+            {tabs.map(t => (
+              <option key={t.id} value={t.id}>
+                {t.label}{t.badge ? ` (${t.badge})` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        {/* Active tab label + badge shown below the select for context */}
+        <div className="flex items-center gap-1.5 mt-1.5 px-0.5">
+          <span className="text-[11px] text-muted">Viewing:</span>
+          <span className="text-[11px] font-bold text-accent">{activeTab?.label}</span>
+          {activeTab?.badge !== undefined && activeTab?.badge !== null && activeTab?.badge !== 0 && (
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-accent text-white">
+              {activeTab.badge}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Desktop tab strip (≥ sm) ─────────────────────────────────────── */}
+      <div className="hidden sm:flex relative border-b border-gray-200 bg-app-bg items-stretch">
         {canScrollLeft && (
           <button
             onClick={() => scroll('left')}
@@ -70,11 +104,9 @@ export function Tabs({ tabs, defaultId, onChange, renderContent }: Props) {
           </button>
         )}
 
-        {/* Scrollable tab list */}
         <div
           ref={scrollRef}
           className="flex items-stretch overflow-x-auto scrollbar-none flex-1"
-          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
           {tabs.map(t => {
             const isActive = t.id === active
@@ -107,7 +139,6 @@ export function Tabs({ tabs, defaultId, onChange, renderContent }: Props) {
           })}
         </div>
 
-        {/* Right scroll arrow */}
         {canScrollRight && (
           <button
             onClick={() => scroll('right')}
@@ -120,7 +151,6 @@ export function Tabs({ tabs, defaultId, onChange, renderContent }: Props) {
           </button>
         )}
 
-        {/* Right fade gradient — always visible when there's overflow to the right */}
         {canScrollRight && (
           <div className="absolute right-8 top-0 bottom-0 w-8 pointer-events-none bg-gradient-to-r from-transparent to-app-bg" />
         )}

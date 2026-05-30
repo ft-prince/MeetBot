@@ -24,6 +24,7 @@ export function MeetingDetail() {
   const [botAction, setBotAction] = useState<'stopping' | 'exiting' | null>(null)
   const [botError, setBotError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const processPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const meetingCode = summary?.meetingCode ?? null
 
@@ -116,6 +117,18 @@ export function MeetingDetail() {
 
   const isLive = botStatus === 'active'
   const hasSummary = !!(summary?.summary || summary?.detailedRewrite)
+  const isProcessing = !isLive && !hasSummary && !loading
+
+  // Auto-poll every 6 s while the AI pipeline is running (no summary yet, bot gone).
+  // Stops automatically the moment hasSummary flips to true.
+  useEffect(() => {
+    if (!isProcessing) {
+      if (processPollRef.current) { clearInterval(processPollRef.current); processPollRef.current = null }
+      return
+    }
+    processPollRef.current = setInterval(() => { loadData() }, 6000)
+    return () => { if (processPollRef.current) { clearInterval(processPollRef.current); processPollRef.current = null } }
+  }, [isProcessing, loadData])
 
   const tabs = [
     { id: 'transcript', label: 'Transcript', badge: segments.length || null },
@@ -190,6 +203,7 @@ export function MeetingDetail() {
                     error={summaryError}
                     summary={summary}
                     isLive={isLive}
+                    isProcessing={isProcessing}
                   />
                 )
               case 'actions':
@@ -200,6 +214,7 @@ export function MeetingDetail() {
                     items={summary?.actionItems ?? []}
                     moduleStatus={summary?.processingStatus?.actionItems}
                     isLive={isLive}
+                    isProcessing={isProcessing}
                   />
                 )
               case 'insights':
@@ -209,6 +224,7 @@ export function MeetingDetail() {
                     error={summaryError}
                     summary={summary}
                     isLive={isLive}
+                    isProcessing={isProcessing}
                   />
                 )
               case 'speakers':
@@ -229,6 +245,7 @@ export function MeetingDetail() {
                     chapters={summary?.chapters ?? []}
                     moduleStatus={summary?.processingStatus?.chapters}
                     isLive={isLive}
+                    isProcessing={isProcessing}
                   />
                 )
               case 'analytics':
@@ -286,6 +303,21 @@ function LoadingState() {
   )
 }
 
+function ProcessingState({ label = 'Generating AI summary' }: { label?: string }) {
+  return (
+    <TabPad className="flex flex-col items-center justify-center py-14 gap-3">
+      <div className="relative w-12 h-12">
+        <svg className="animate-spin text-accent" width="48" height="48" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+          <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+      </div>
+      <div className="text-sm font-semibold text-gray-700">{label}…</div>
+      <div className="text-xs text-muted">This usually takes 30–60 seconds. Hang tight!</div>
+    </TabPad>
+  )
+}
+
 function TranscriptTab({
   loading, error, segments, speakerColors, isLive,
 }: {
@@ -328,18 +360,20 @@ function TranscriptTab({
 }
 
 function SummaryTab({
-  loading, error, summary, isLive,
+  loading, error, summary, isLive, isProcessing,
 }: {
   loading: boolean
   error: string | null
   summary: MeetingSummary | null
   isLive: boolean
+  isProcessing: boolean
 }) {
   if (loading) return <LoadingState />
   if (error) return <ErrorState message={error} />
   const hasShort = !!summary?.summary
   const hasLong = !!summary?.detailedRewrite
   if (!hasShort && !hasLong) {
+    if (isProcessing) return <ProcessingState label="Generating AI summary" />
     return <EmptyState icon="🤖" title={isLive ? 'Summary not ready yet' : 'No summary available'} hint={isLive ? 'Will be generated when the meeting ends.' : ''} />
   }
   return (
@@ -380,17 +414,19 @@ function StatusBadge({ status }: { status: ModuleStatus | undefined }) {
 }
 
 function ActionItemsTab({
-  loading, error, items, moduleStatus, isLive,
+  loading, error, items, moduleStatus, isLive, isProcessing,
 }: {
   loading: boolean
   error: string | null
   items: ActionItem[]
   moduleStatus: ModuleStatus | undefined
   isLive: boolean
+  isProcessing: boolean
 }) {
   if (loading) return <LoadingState />
   if (error) return <ErrorState message={error} />
   if (items.length === 0) {
+    if (isProcessing) return <ProcessingState label="Extracting action items" />
     return <EmptyState icon="✅" title={isLive ? 'Action items appear after the meeting' : 'No action items extracted'} hint={moduleStatus === 'failed' ? 'AI module failed — retry by re-summarizing.' : ''} />
   }
   return (
@@ -428,12 +464,13 @@ function ActionItemsTab({
 }
 
 function InsightsTab({
-  loading, error, summary, isLive,
+  loading, error, summary, isLive, isProcessing,
 }: {
   loading: boolean
   error: string | null
   summary: MeetingSummary | null
   isLive: boolean
+  isProcessing: boolean
 }) {
   if (loading) return <LoadingState />
   if (error) return <ErrorState message={error} />
@@ -441,6 +478,7 @@ function InsightsTab({
   const important = summary?.importantPoints ?? []
   const questions = summary?.keyQuestions ?? []
   if (insights.length === 0 && important.length === 0 && questions.length === 0) {
+    if (isProcessing) return <ProcessingState label="Extracting key insights" />
     return <EmptyState icon="💡" title="No insights yet" hint={isLive ? 'Generated after the meeting ends.' : ''} />
   }
   return (
@@ -605,15 +643,17 @@ function InsightList({ label, icon, items }: { label: string; icon: string; item
 }
 
 function ChaptersTab({
-  loading, chapters, moduleStatus, isLive,
+  loading, chapters, moduleStatus, isLive, isProcessing,
 }: {
   loading: boolean
   chapters: Chapter[]
   moduleStatus: ModuleStatus | undefined
   isLive: boolean
+  isProcessing: boolean
 }) {
   if (loading) return <LoadingState />
   if (chapters.length === 0) {
+    if (isProcessing) return <ProcessingState label="Generating chapters" />
     return <EmptyState icon="📑" title={isLive ? 'Chapters appear after the meeting' : 'No chapters generated'} hint={moduleStatus === 'failed' ? 'AI module failed to chapter the transcript.' : ''} />
   }
   return (

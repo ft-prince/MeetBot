@@ -22,11 +22,11 @@ export function SignIn() {
   }
 
   return (
-    <div className="h-screen overflow-hidden bg-[#FAF9F6] text-ink font-sans antialiased flex flex-col">
+    <div className="min-h-screen lg:h-screen lg:overflow-hidden bg-[#FAF9F6] text-ink font-sans antialiased flex flex-col">
       {/* ── Navbar ──────────────────────────────────────────────────────── */}
-      <nav className="flex-shrink-0 max-w-[1400px] w-full mx-auto px-[5%] py-5 flex items-center justify-between">
-        <a href="/" className="flex items-center gap-2.5 text-2xl font-extrabold text-accent tracking-tight">
-          <div className="w-8 h-8 bg-accent rounded-md flex items-center justify-center">
+      <nav className="flex-shrink-0 max-w-[1400px] w-full mx-auto px-5 sm:px-[5%] py-4 sm:py-5 flex items-center justify-between">
+        <a href="/" className="flex items-center gap-2.5 text-xl sm:text-2xl font-extrabold text-accent tracking-tight">
+          <div className="w-8 h-8 bg-accent rounded-md flex items-center justify-center flex-shrink-0">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 20h9" />
               <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
@@ -41,10 +41,14 @@ export function SignIn() {
         </div>
       </nav>
 
-      {/* ── Hero + Auth Card (fills remaining height) ───────────────────── */}
-      <main className="flex-1 min-h-0 max-w-[1400px] w-full mx-auto px-[5%] pb-6 grid grid-cols-1 lg:grid-cols-[1.05fr_0.95fr] gap-10 lg:gap-14 items-center">
-        {/* Hero copy + compact features */}
-        <div className="flex flex-col gap-6">
+      {/* ── Hero + Auth Card ─────────────────────────────────────────────── */}
+      {/* Mobile: auth card only, centered. Desktop: two-column hero + card. */}
+      <main className="flex-1 min-h-0 max-w-[1400px] w-full mx-auto px-5 sm:px-[5%] pb-8 lg:pb-6
+                       flex flex-col items-center justify-center
+                       lg:grid lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-14">
+
+        {/* Hero copy + compact features — hidden on mobile */}
+        <div className="hidden lg:flex flex-col gap-6">
           <div className="flex items-center gap-3 text-sm font-bold uppercase tracking-[0.1em] text-accent">
             <span className="w-7 h-0.5 bg-accent" />
             Meeting Intelligence
@@ -57,7 +61,6 @@ export function SignIn() {
             Stop taking notes. NoteAI joins your calls, records audio, and delivers searchable transcripts automatically.
           </p>
 
-          {/* Inline compact features */}
           <div id="features" className="grid grid-cols-2 gap-x-6 gap-y-4 mt-3 max-w-[560px]">
             <Feature
               title="Calendar sync"
@@ -98,10 +101,16 @@ export function SignIn() {
           </div>
         </div>
 
-        {/* Auth card */}
-        <div className="bg-white rounded-[20px] p-10 lg:p-12 border border-black/[0.03] shadow-[0_4px_20px_-2px_rgba(0,0,0,0.05),0_2px_8px_-1px_rgba(0,0,0,0.03)] w-full max-w-md justify-self-center lg:justify-self-end">
-          <h2 className="text-3xl font-extrabold tracking-tight mb-3">Welcome back</h2>
-          <p className="text-base text-muted mb-8">Sign in with your Google account to continue.</p>
+        {/* Auth card — full-width on mobile, right-aligned on desktop */}
+        <div className="bg-white rounded-[20px] p-8 sm:p-10 lg:p-12 border border-black/[0.03] shadow-[0_4px_20px_-2px_rgba(0,0,0,0.05),0_2px_8px_-1px_rgba(0,0,0,0.03)] w-full max-w-md lg:justify-self-end">
+          {/* Mobile-only tagline above form */}
+          <div className="lg:hidden mb-6 text-center">
+            <p className="text-sm font-semibold text-accent uppercase tracking-widest mb-1">Meeting Intelligence</p>
+            <h1 className="text-2xl font-extrabold tracking-tight text-[#1a1a1a]">Capture every meeting.</h1>
+          </div>
+
+          <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-3">Welcome back</h2>
+          <p className="text-sm sm:text-base text-muted mb-8">Sign in with your Google account to continue.</p>
 
           {error && (
             <div className="bg-red-50 text-red-700 border border-red-200 rounded-lg px-4 py-3 mb-6 text-sm font-semibold">
