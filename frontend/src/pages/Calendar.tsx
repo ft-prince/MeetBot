@@ -93,7 +93,7 @@ export function Calendar() {
         subtitle="Past, live, and upcoming meetings from your Google Calendar"
         right={<button onClick={sync} disabled={syncing} className="btn btn-primary btn-sm whitespace-nowrap">{syncing ? 'Syncing…' : '🔄 Sync'}</button>}
       />
-      <div className="p-4 sm:p-8 flex-1">
+      <div className="p-3 sm:p-6 lg:p-8 flex-1 overflow-y-auto">
         {!user ? (
           <div className="bg-accent-light border border-accent/20 rounded-lg px-4 py-3 text-sm text-amber-800">
             <strong>Connect your Google account</strong> to sync upcoming meetings and enable auto-join.

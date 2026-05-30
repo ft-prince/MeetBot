@@ -16,8 +16,8 @@ export function Profile() {
     return (
       <>
         <Topbar title="Profile" subtitle="Account settings and preferences" />
-        <div className="p-8">
-          <div className="card p-8 max-w-md text-center">
+        <div className="p-3 sm:p-6 lg:p-8">
+          <div className="card p-6 sm:p-8 max-w-md text-center">
             <p className="text-muted mb-4">Sign in to manage your profile and settings.</p>
             <a href="/auth/google" className="btn btn-primary">Connect Google Account</a>
           </div>
@@ -47,10 +47,10 @@ export function Profile() {
   return (
     <>
       <Topbar title="Profile" subtitle="Account settings and preferences" />
-      <div className="p-4 sm:p-8 flex-1">
-        <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6 items-start">
+      <div className="p-3 sm:p-6 lg:p-8 flex-1 overflow-y-auto">
+        <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 sm:gap-6 items-start">
           {/* User card */}
-          <div className="card p-7">
+          <div className="card p-5 sm:p-7">
             <div className="w-[72px] h-[72px] rounded-full bg-gradient-to-br from-accent to-amber-500 flex items-center justify-center text-white text-2xl font-bold mb-5 overflow-hidden">
               {user.picture ? <img src={user.picture} alt="" className="w-full h-full object-cover" /> : ini}
             </div>

@@ -93,7 +93,7 @@ export function AllMeetings() {
   return (
     <>
       <Topbar title="All Meetings" subtitle="Browse, search, and export your recorded meetings" />
-      <div className="p-4 sm:p-8 flex-1">
+      <div className="p-4 sm:p-8 flex-1 overflow-y-auto">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
           <SummaryStat label="Showing" value={summary.count} />
           <SummaryStat label="Total Time" value={summary.hours + 'h'} />

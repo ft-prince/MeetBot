@@ -143,16 +143,16 @@ export function Dashboard() {
   return (
     <>
       <Topbar title="Dashboard" subtitle="Overview of your meetings" />
-      <div className="p-4 sm:p-8 flex-1">
-        <div className="mb-6">
-          <h1 className="text-2xl font-extrabold mb-1">
+      <div className="p-3 sm:p-6 lg:p-8 flex-1 overflow-y-auto">
+        <div className="mb-4 sm:mb-6">
+          <h1 className="text-xl sm:text-2xl font-extrabold mb-1">
             Good {greeting}, {user?.name?.split(" ")[0] || "there"}
           </h1>
-          <p className="text-sm text-muted">Here's what's happening with your meetings.</p>
+          <p className="text-xs sm:text-sm text-muted">Here's what's happening with your meetings.</p>
         </div>
 
         {/* Quick Join + Schedule */}
-        <div className="card p-4 sm:p-5 mb-6">
+        <div className="card p-3 sm:p-5 mb-4 sm:mb-6">
           <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
             <div className="text-sm font-semibold flex items-center gap-2">
               <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
@@ -162,8 +162,8 @@ export function Dashboard() {
               </svg>
               Quick Join
             </div>
-            <button onClick={() => setModalOpen(true)} className="btn btn-secondary btn-sm whitespace-nowrap">
-              + Schedule
+            <button onClick={() => setModalOpen(true)} className="btn btn-secondary btn-sm whitespace-nowrap hidden sm:inline-flex">
+              + Schedule Meeting
             </button>
           </div>
           <div className="flex flex-col sm:flex-row gap-2.5">
@@ -185,7 +185,7 @@ export function Dashboard() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4 mb-4 sm:mb-6">
           <StatCard label="Total Meetings" value={stats.total} sub={stats.thisWeek + " this week"} />
           <StatCard label="Live Now" value={stats.live} sub={(stats.live !== 1 ? "active recordings" : "active recording")} valueClass={stats.live > 0 ? "text-success" : ""} />
           <StatCard label="AI Summaries" value={stats.summarised} sub={stats.total ? Math.round((stats.summarised / stats.total) * 100) + "% complete" : "none yet"} valueClass="text-accent" />
@@ -197,7 +197,7 @@ export function Dashboard() {
         </div>
 
         {/* Two-column panels */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
           <Panel
             title={<span className="flex items-center gap-1.5"><CalendarIcon />Upcoming Meetings</span>}
             action={user && <button onClick={async () => { await api.syncCalendar(); load() }} className="btn btn-secondary btn-sm">Sync</button>}
@@ -324,10 +324,10 @@ function ScheduledIcon() {
 
 function StatCard({ label, value, sub, valueClass = "" }: { label: string; value: string | number; sub: string; valueClass?: string }) {
   return (
-    <div className="card p-4">
-      <div className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">{label}</div>
-      <div className={"text-3xl font-extrabold leading-tight " + valueClass}>{value}</div>
-      <div className="text-[11px] text-muted mt-1">{sub}</div>
+    <div className="card p-3 sm:p-4">
+      <div className="text-[10px] sm:text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">{label}</div>
+      <div className={"text-xl sm:text-3xl font-extrabold leading-tight " + valueClass}>{value}</div>
+      <div className="text-[10px] sm:text-[11px] text-muted mt-1">{sub}</div>
     </div>
   )
 }
@@ -335,7 +335,7 @@ function StatCard({ label, value, sub, valueClass = "" }: { label: string; value
 function Panel({ title, action, children }: { title: React.ReactNode; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="card overflow-hidden">
-      <div className="px-5 py-3.5 border-b border-gray-200 flex items-center justify-between">
+      <div className="px-3 sm:px-5 py-3 sm:py-3.5 border-b border-gray-200 flex items-center justify-between">
         <span className="text-sm font-bold flex items-center gap-1.5">{title}</span>
         {action}
       </div>
@@ -348,7 +348,7 @@ function DashItem({ icon, title, sub, right, onClick }: {
   icon: React.ReactNode; title: string; sub: string; right?: React.ReactNode; onClick?: () => void
 }) {
   return (
-    <div onClick={onClick} className="px-5 py-3.5 border-b border-gray-200 last:border-b-0 flex items-center gap-3.5 cursor-pointer hover:bg-app-bg transition-colors">
+    <div onClick={onClick} className="px-3 sm:px-5 py-3 sm:py-3.5 border-b border-gray-200 last:border-b-0 flex items-center gap-2.5 sm:gap-3.5 cursor-pointer hover:bg-app-bg transition-colors">
       {icon}
       <div className="flex-1 min-w-0">
         <div className="text-sm font-semibold overflow-hidden text-ellipsis whitespace-nowrap">{title}</div>

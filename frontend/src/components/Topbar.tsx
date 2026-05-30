@@ -7,7 +7,7 @@ export function Topbar({ title, subtitle, right }: {
 }) {
   const { toggle } = useSidebarToggle()
   return (
-    <div className="sticky top-0 z-30 bg-white border-b border-gray-200 px-4 sm:px-6 py-3 sm:py-3.5 flex items-center gap-3 min-w-0">
+    <div className="sticky top-0 z-30 bg-white border-b border-gray-200 px-3 sm:px-6 py-3 sm:py-3.5 flex items-center gap-2 sm:gap-3 min-w-0">
       <button
         onClick={toggle}
         className="lg:hidden p-1.5 rounded-md text-muted hover:bg-app-bg transition-colors flex-shrink-0"

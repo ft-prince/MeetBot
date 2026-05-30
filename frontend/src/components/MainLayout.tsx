@@ -19,7 +19,7 @@ export function MainLayout() {
 
   return (
     <SidebarCtx.Provider value={{ toggle: () => setIsOpen(o => !o) }}>
-      <div className="flex min-h-screen">
+      <div className="flex h-screen overflow-hidden">
         {/* Mobile backdrop */}
         {isOpen && (
           <div
@@ -34,7 +34,7 @@ export function MainLayout() {
           onClose={() => setIsOpen(false)}
         />
 
-        <main className="lg:ml-60 flex-1 flex flex-col min-h-screen">
+        <main className="lg:ml-60 flex-1 flex flex-col min-w-0 overflow-hidden">
           <Outlet />
         </main>
       </div>

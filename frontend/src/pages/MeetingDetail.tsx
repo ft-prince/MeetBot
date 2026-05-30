@@ -143,39 +143,43 @@ export function MeetingDetail() {
   return (
     <>
       <Topbar title="Meeting Details" subtitle="" />
-      <div className="p-4 sm:p-8 flex-1">
-        <div className="flex items-center gap-3 mb-6 flex-wrap">
-          <button onClick={() => navigate(-1)} className="btn btn-secondary btn-sm">Back</button>
-          <div className="flex-1">
-            <div className="font-mono text-base font-bold text-accent">{summary?.meetingCode || id}</div>
-            {summary?.startedAt && (
-              <div className="text-xs text-muted mt-0.5">
-                {fmtDate(summary.startedAt)} · {fmtTimeOfDay(summary.startedAt)} · {fmtDuration(summary.durationMs)}
+      <div className="p-3 sm:p-6 lg:p-8 flex-1 overflow-y-auto">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4 sm:mb-6">
+          <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={() => navigate(-1)} className="btn btn-secondary btn-sm">Back</button>
+            <div className="flex-1 min-w-0">
+              <div className="font-mono text-sm sm:text-base font-bold text-accent truncate">{summary?.meetingCode || id}</div>
+              {summary?.startedAt && (
+                <div className="text-[11px] sm:text-xs text-muted mt-0.5">
+                  {fmtDate(summary.startedAt)} · {fmtTimeOfDay(summary.startedAt)} · {fmtDuration(summary.durationMs)}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {!loading && summary?.language && (
+              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                {summary.language}
+              </span>
+            )}
+            {!loading && (
+              isLive
+                ? <Pill variant="live">Live</Pill>
+                : hasSummary
+                  ? <Pill variant="done">Summarized</Pill>
+                  : <Pill variant="pending">Processing</Pill>
+            )}
+            {meetingCode && isLive && (
+              <div className="flex items-center gap-2">
+                <button onClick={handleStopBot} disabled={botAction !== null} className="btn btn-secondary btn-sm">
+                  {botAction === 'stopping' ? 'Stopping…' : 'Stop Bot'}
+                </button>
+                <button onClick={handleExitBot} disabled={botAction !== null} className="btn btn-sm border border-danger text-danger hover:bg-red-50 transition-colors rounded-lg px-3 py-1.5 text-xs font-semibold">
+                  {botAction === 'exiting' ? 'Exiting…' : 'Exit Bot'}
+                </button>
               </div>
             )}
           </div>
-          {!loading && summary?.language && (
-            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-              {summary.language}
-            </span>
-          )}
-          {!loading && (
-            isLive
-              ? <Pill variant="live">Live</Pill>
-              : hasSummary
-                ? <Pill variant="done">Summarized</Pill>
-                : <Pill variant="pending">Processing</Pill>
-          )}
-          {meetingCode && isLive && (
-            <div className="flex items-center gap-2">
-              <button onClick={handleStopBot} disabled={botAction !== null} className="btn btn-secondary btn-sm">
-                {botAction === 'stopping' ? 'Stopping…' : 'Stop Bot'}
-              </button>
-              <button onClick={handleExitBot} disabled={botAction !== null} className="btn btn-sm border border-danger text-danger hover:bg-red-50 transition-colors rounded-lg px-3 py-1.5 text-xs font-semibold">
-                {botAction === 'exiting' ? 'Exiting…' : 'Exit Bot'}
-              </button>
-            </div>
-          )}
         </div>
 
         {botError && (

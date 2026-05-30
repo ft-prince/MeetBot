@@ -7,8 +7,12 @@ import { getEventsToAutoJoin, linkMeeting } from './calendarService';
 import { getDueScheduledMeetings, markScheduledLaunched } from './scheduledMeetingService';
 import { getMeetingIdByCode } from './meetingService';
 import { botManager } from '../bot/botManager';
+import { db } from '../db/client';
+import { syncEmails } from './emailService';
+import { analyzeUnanalyzedThreads, detectFollowUps } from './emailAnalysisService';
 
 let timer: ReturnType<typeof setInterval> | null = null;
+let lastDailyEmailSync = 0;
 
 export function startScheduler(): void {
   if (timer) return;
@@ -21,7 +25,7 @@ export function stopScheduler(): void {
 }
 
 async function tick(): Promise<void> {
-  await Promise.allSettled([checkCalendarEvents(), checkScheduledMeetings()]);
+  await Promise.allSettled([checkCalendarEvents(), checkScheduledMeetings(), dailyEmailSync()]);
 }
 
 async function checkCalendarEvents(): Promise<void> {
@@ -39,6 +43,29 @@ async function checkCalendarEvents(): Promise<void> {
     }
   } catch (err) {
     console.error('[scheduler] Calendar check error:', (err as Error).message);
+  }
+}
+
+const DAILY_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+async function dailyEmailSync(): Promise<void> {
+  if (Date.now() - lastDailyEmailSync < DAILY_SYNC_INTERVAL_MS) return;
+  lastDailyEmailSync = Date.now();
+
+  try {
+    const usersRes = await db.query('SELECT id FROM users WHERE refresh_token IS NOT NULL');
+    for (const row of usersRes.rows) {
+      try {
+        console.log(`[scheduler] Daily email sync for user ${row.id}`);
+        await syncEmails(row.id);
+        await analyzeUnanalyzedThreads(row.id, 10);
+        await detectFollowUps(row.id);
+      } catch (err) {
+        console.warn(`[scheduler] Email sync failed for user ${row.id}:`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.error('[scheduler] Daily email sync error:', (err as Error).message);
   }
 }
 

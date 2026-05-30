@@ -133,3 +133,114 @@ CREATE TABLE IF NOT EXISTS dom_speaker_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dom_events_meeting ON dom_speaker_events(meeting_id, event_ms);
+
+-- ── Email Threads ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS email_threads (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  gmail_thread_id  TEXT NOT NULL,
+  subject          TEXT NOT NULL DEFAULT '',
+  snippet          TEXT,
+  participants     JSONB DEFAULT '[]',
+  label_ids        JSONB DEFAULT '[]',
+  message_count    INTEGER DEFAULT 0,
+  last_message_at  TIMESTAMPTZ,
+  first_message_at TIMESTAMPTZ,
+  is_unread        BOOLEAN DEFAULT false,
+  project_tag      TEXT,
+  synced_at        TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, gmail_thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_threads_user      ON email_threads(user_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_threads_project    ON email_threads(user_id, project_tag);
+CREATE INDEX IF NOT EXISTS idx_email_threads_subject    ON email_threads USING GIN (to_tsvector('english', subject));
+
+-- ── Emails (individual messages within threads) ─────────────────────────────
+CREATE TABLE IF NOT EXISTS emails (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  thread_id        UUID NOT NULL REFERENCES email_threads(id) ON DELETE CASCADE,
+  user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  gmail_message_id TEXT NOT NULL,
+  from_address     TEXT NOT NULL,
+  from_name        TEXT,
+  to_addresses     JSONB DEFAULT '[]',
+  cc_addresses     JSONB DEFAULT '[]',
+  subject          TEXT,
+  body_text        TEXT,
+  body_html        TEXT,
+  sent_at          TIMESTAMPTZ NOT NULL,
+  is_sent_by_user  BOOLEAN DEFAULT false,
+  has_attachments  BOOLEAN DEFAULT false,
+  synced_at        TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, gmail_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_emails_thread   ON emails(thread_id, sent_at);
+CREATE INDEX IF NOT EXISTS idx_emails_user     ON emails(user_id, sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_emails_body     ON emails USING GIN (to_tsvector('english', body_text));
+
+-- ── Email Thread Analysis (AI-generated) ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS email_analysis (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  thread_id        UUID NOT NULL REFERENCES email_threads(id) ON DELETE CASCADE UNIQUE,
+  summary          TEXT,
+  status           TEXT,
+  key_points       JSONB DEFAULT '[]',
+  decisions        JSONB DEFAULT '[]',
+  risks            JSONB DEFAULT '[]',
+  sentiment        TEXT,
+  follow_up_needed BOOLEAN DEFAULT false,
+  follow_up_reason TEXT,
+  suggested_reply  TEXT,
+  next_action      TEXT,
+  analyzed_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_analysis_thread ON email_analysis(thread_id);
+
+-- ── Email Action Items ──────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS email_action_items (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  thread_id        UUID NOT NULL REFERENCES email_threads(id) ON DELETE CASCADE,
+  user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  task             TEXT NOT NULL,
+  owner            TEXT,
+  due_hint         TEXT,
+  priority         TEXT DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high', 'critical')),
+  status           TEXT DEFAULT 'open' CHECK (status IN ('open', 'completed', 'dismissed')),
+  source           TEXT DEFAULT 'ai',
+  created_at       TIMESTAMPTZ DEFAULT now(),
+  completed_at     TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_actions_thread ON email_action_items(thread_id);
+CREATE INDEX IF NOT EXISTS idx_email_actions_user   ON email_action_items(user_id, status);
+
+-- ── Email Follow-Ups ────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS email_follow_ups (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  thread_id        UUID NOT NULL REFERENCES email_threads(id) ON DELETE CASCADE,
+  user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reason           TEXT NOT NULL,
+  due_date         DATE,
+  status           TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'snoozed', 'dismissed')),
+  suggested_message TEXT,
+  days_waiting     INTEGER,
+  created_at       TIMESTAMPTZ DEFAULT now(),
+  completed_at     TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_followups_user   ON email_follow_ups(user_id, status, due_date);
+CREATE INDEX IF NOT EXISTS idx_email_followups_thread ON email_follow_ups(thread_id);
+
+-- ── Email Sync State ────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS email_sync_state (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+  last_history_id  TEXT,
+  last_sync_at     TIMESTAMPTZ,
+  total_synced     INTEGER DEFAULT 0,
+  sync_status      TEXT DEFAULT 'idle' CHECK (sync_status IN ('idle', 'syncing', 'error')),
+  error_message    TEXT
+);
