@@ -34,11 +34,7 @@ export function SignIn() {
           </div>
           NoteAI
         </a>
-        <div className="hidden sm:flex gap-10 items-center">
-          <a href="#features" className="relative text-base font-semibold text-accent after:content-[''] after:absolute after:-bottom-1 after:left-0 after:w-full after:h-0.5 after:bg-accent after:rounded-sm">
-            Features
-          </a>
-        </div>
+      
       </nav>
 
       {/* ── Hero + Auth Card ─────────────────────────────────────────────── */}
