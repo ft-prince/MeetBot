@@ -10,6 +10,9 @@ import { MeetingDetail } from './pages/MeetingDetail'
 import { Profile } from './pages/Profile'
 import { HelpSupport } from './pages/HelpSupport'
 import { SignIn } from './pages/SignIn'
+import { EmailInbox } from './pages/EmailInbox'
+import { EmailThreadDetail } from './pages/EmailThreadDetail'
+import { EmailDashboard } from './pages/EmailDashboard'
 
 export default function App() {
   return (
@@ -27,6 +30,9 @@ export default function App() {
             <Route path="calendar" element={<Calendar />} />
             <Route path="meetings" element={<AllMeetings />} />
             <Route path="meetings/:id" element={<MeetingDetail />} />
+            <Route path="emails" element={<EmailInbox />} />
+            <Route path="emails/dashboard" element={<EmailDashboard />} />
+            <Route path="emails/:id" element={<EmailThreadDetail />} />
             <Route path="profile" element={<Profile />} />
             <Route path="help" element={<HelpSupport />} />
           </Route>

@@ -33,6 +33,7 @@ export function getAuthUrl(state: string): string {
       'email',
       'profile',
       'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/gmail.readonly',
     ],
     state,
   });

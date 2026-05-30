@@ -13,6 +13,7 @@ import authRouter, { handleGoogleCallback } from './routes/auth';
 import calendarRouter from './routes/calendar';
 import supportRouter from './routes/support';
 import recallWebhookRouter from './routes/recallWebhook';
+import emailRouter from './routes/email';
 import { startScheduler } from './services/schedulerService';
 // session type augmentation — loaded via tsconfig includes
 
@@ -61,6 +62,7 @@ async function main() {
   app.use('/api/calendar', calendarRouter);
   app.use('/api/support', supportRouter);
   app.use('/recall', recallWebhookRouter);
+  app.use('/api/emails', emailRouter);
 
   // Serve the React UI build (frontend/dist). Falls back to the legacy vanilla
   // frontend if the React build hasn't been produced yet.

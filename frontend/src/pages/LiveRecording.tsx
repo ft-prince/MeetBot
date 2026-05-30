@@ -27,8 +27,8 @@ export function LiveRecording() {
   return (
     <>
       <Topbar title="Live Recording" subtitle="Real-time transcription with speaker identification" />
-      <div className="p-4 sm:p-8 flex-1">
-        <div className="card p-4 sm:p-5 mb-6">
+      <div className="p-3 sm:p-6 lg:p-8 flex-1 overflow-y-auto">
+        <div className="card p-3 sm:p-5 mb-4 sm:mb-6">
           <div className="text-sm font-semibold mb-3 flex items-center gap-2">
             <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
               <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />

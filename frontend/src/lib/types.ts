@@ -131,3 +131,96 @@ export interface LiveSegment {
   text: string
   startMs: number
 }
+
+// ── Email Intelligence Types ────────────────────────────────────────────────
+
+export interface EmailThread {
+  id: string
+  gmailThreadId: string
+  subject: string
+  snippet: string | null
+  participants: { name?: string; email: string }[]
+  messageCount: number
+  lastMessageAt: string
+  firstMessageAt: string
+  isUnread: boolean
+  projectTag: string | null
+}
+
+export interface EmailMessage {
+  id: string
+  threadId: string
+  gmailMessageId: string
+  fromAddress: string
+  fromName: string | null
+  toAddresses: string[]
+  ccAddresses: string[]
+  subject: string | null
+  bodyText: string | null
+  sentAt: string
+  isSentByUser: boolean
+  hasAttachments: boolean
+}
+
+export interface EmailAnalysis {
+  summary: string
+  status: string
+  keyPoints: string[]
+  decisions: string[]
+  risks: string[]
+  followUpNeeded: boolean
+  followUpReason: string | null
+  suggestedReply: string | null
+  nextAction: string | null
+  analyzedAt: string
+}
+
+export interface EmailActionItem {
+  id: string
+  threadId: string
+  subject: string
+  task: string
+  owner: string | null
+  dueHint: string | null
+  priority: 'low' | 'medium' | 'high' | 'critical'
+  status: 'open' | 'completed' | 'dismissed'
+}
+
+export interface EmailFollowUp {
+  id: string
+  threadId: string
+  subject: string
+  reason: string
+  dueDate: string | null
+  daysWaiting: number | null
+  suggestedMessage: string | null
+  status: 'pending' | 'completed' | 'snoozed' | 'dismissed'
+}
+
+export interface EmailSyncState {
+  lastSyncAt: string | null
+  totalSynced: number
+  syncStatus: 'idle' | 'syncing' | 'error'
+  errorMessage: string | null
+}
+
+export interface EmailDailyBrief {
+  date: string
+  followUps: { threadId: string; subject: string; reason: string; daysWaiting: number }[]
+  pendingActions: { threadId: string; subject: string; task: string; priority: string }[]
+  newThreads: number
+  unrepliedCount: number
+  briefText: string
+}
+
+export interface AnalysisProgress {
+  status: 'idle' | 'running' | 'completed' | 'error'
+  total: number
+  processed: number
+  remaining: number
+  percentage: number
+  currentThread: string | null
+  errors: number
+  startedAt: number | null
+  completedAt: number | null
+}
