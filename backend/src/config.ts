@@ -23,6 +23,13 @@ export const config = {
   botZoomChromeProfileDir: process.env.BOT_ZOOM_CHROME_PROFILE_DIR || '',
   botZoomEmail:    process.env.BOT_ZOOM_EMAIL    || '',
   botZoomPassword: process.env.BOT_ZOOM_PASSWORD || '',
+  // Teams bot — run `npx tsx scripts/teams-login.ts` once to create the profile.
+  // Empty profile → guest join (works for meetings that allow anonymous join).
+  botTeamsChromeProfileDir: process.env.BOT_TEAMS_CHROME_PROFILE_DIR || '',
+  botTeamsEmail:    process.env.BOT_TEAMS_EMAIL    || '',
+  botTeamsPassword: process.env.BOT_TEAMS_PASSWORD || '',
+  // Which engine joins Teams meetings: 'inhouse' (Playwright TeamsBot) or 'recall'
+  teamsBotMode: (process.env.TEAMS_BOT_MODE === 'recall' ? 'recall' : 'inhouse') as 'inhouse' | 'recall',
   // Which engine joins Zoom meetings: 'inhouse' (Playwright ZoomBot) or 'recall' (Recall AI fallback)
   zoomBotMode: (process.env.ZOOM_BOT_MODE === 'recall' ? 'recall' : 'inhouse') as 'inhouse' | 'recall',
   // Support ticket email — set SUPPORT_EMAIL to enable email delivery

@@ -5,9 +5,10 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc && cp src/bot/audioInjector.js dist/bot/audioInjector.js && cp src/bot/zoomAudioInjector.js dist/bot/zoomAudioInjector.js",
+    "build": "tsc && cp src/bot/audioInjector.js dist/bot/audioInjector.js && cp src/bot/zoomAudioInjector.js dist/bot/zoomAudioInjector.js && cp src/bot/teamsAudioInjector.js dist/bot/teamsAudioInjector.js",
     "start": "node dist/index.js",
-    "db:migrate": "node scripts/migrate.js"
+    "db:migrate": "node scripts/migrate.js",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@deepgram/sdk": "^3.9.0",

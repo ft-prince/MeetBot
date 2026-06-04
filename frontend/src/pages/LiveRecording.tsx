@@ -41,7 +41,7 @@ export function LiveRecording() {
             <input
               className="input flex-1"
               type="url"
-              placeholder="Paste Google Meet or Zoom link"
+              placeholder="Paste Google Meet, Zoom, or Teams link"
               value={url}
               onChange={e => setUrl(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && join()}
@@ -55,7 +55,7 @@ export function LiveRecording() {
         {meetings.size === 0 ? (
           <div className="text-center py-16 text-muted">
             <div className="text-4xl mb-3">🎙</div>
-            <p className="text-sm">No active recordings. Paste a Meet link above to start.</p>
+            <p className="text-sm">No active recordings. Paste a Meet, Zoom, or Teams link above to start.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
