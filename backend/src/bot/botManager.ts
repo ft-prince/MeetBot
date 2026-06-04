@@ -1,5 +1,6 @@
 import { MeetBot } from './meetBot';
 import { ZoomBot } from './zoomBot';
+import { TeamsBot } from './teamsBot';
 import { RecallBot } from './recallBot';
 import { config } from '../config';
 import {
@@ -16,23 +17,37 @@ import {
 import { saveSegment } from '../services/meetingService';
 import type { IdentifiedSegment } from '../services/speakerCorrelator';
 
-// MeetBot and ZoomBot share an identical start()/stop() callback contract, so the
-// same in-house pipeline wiring drives both.
-type BrowserBot = MeetBot | ZoomBot;
+// MeetBot, ZoomBot and TeamsBot share an identical start()/stop() callback
+// contract, so the same in-house pipeline wiring drives all three.
+type BrowserBot = MeetBot | ZoomBot | TeamsBot;
 
 const activeBots = new Map<string, BrowserBot>();
 const activeRecallBots = new Map<string, RecallBot>();
 
-function extractMeetingId(url: string): string {
+export function extractMeetingId(url: string): string {
   const meetMatch = url.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/);
   if (meetMatch) return meetMatch[1];
   const zoomMatch = url.match(/\/(?:j|wc\/join)\/(\d+)/);
   if (zoomMatch) return `zoom-${zoomMatch[1]}`;
+  if (isTeamsUrl(url)) {
+    // meetup-join URLs embed a "19:meeting_<id>@thread.v2" conversation id.
+    // The colon is usually URL-encoded as %3a, so match both forms.
+    const teamsMatch = url.match(/19(?::|%3a)meeting_([A-Za-z0-9._-]+)/i);
+    if (teamsMatch) return `teams-${teamsMatch[1].slice(0, 16)}`;
+    // teams.live.com/meet/<digits>
+    const liveMatch = url.match(/teams\.live\.com\/meet\/(\d+)/i);
+    if (liveMatch) return `teams-${liveMatch[1]}`;
+    return `teams-${Date.now()}`;
+  }
   return `bot-${Date.now()}`;
 }
 
 function isZoomUrl(url: string): boolean {
   return /zoom\.us|zoomgov\.com/i.test(url);
+}
+
+export function isTeamsUrl(url: string): boolean {
+  return /teams\.microsoft\.com|teams\.live\.com/i.test(url);
 }
 
 export const botManager = {
@@ -41,14 +56,18 @@ export const botManager = {
     if (activeBots.has(meetingId) || activeRecallBots.has(meetingId)) return meetingId;
 
     const zoom = isZoomUrl(meetingUrl);
+    const teams = isTeamsUrl(meetingUrl);
 
-    // Zoom falls back to the Recall cloud bot only when explicitly opted in.
+    // Zoom/Teams fall back to the Recall cloud bot only when explicitly opted in.
     if (zoom && config.zoomBotMode === 'recall') {
       return launchRecallBot(meetingId, meetingUrl, userId);
     }
+    if (teams && config.teamsBotMode === 'recall') {
+      return launchRecallBot(meetingId, meetingUrl, userId);
+    }
 
-    // In-house path: ZoomBot for Zoom URLs, MeetBot for Google Meet.
-    const bot: BrowserBot = zoom ? new ZoomBot() : new MeetBot();
+    // In-house path: TeamsBot for Teams URLs, ZoomBot for Zoom, MeetBot for Meet.
+    const bot: BrowserBot = teams ? new TeamsBot() : zoom ? new ZoomBot() : new MeetBot();
     activeBots.set(meetingId, bot);
 
     await createBotSession(meetingId, userId);
@@ -67,7 +86,10 @@ export const botManager = {
       displayName: 'NoteAI Recorder',
 
       onTrackAudio: (chunk, trackId) => {
-        if (trackId === 'zoom-mixed') {
+        // Synthetic mixed-stream ids (Zoom WASM / Teams web) go through the
+        // correlator path, tagged with the live DOM active speaker. Per-track
+        // ids (Meet, legacy Zoom/Teams RTC) get their own transcription stream.
+        if (trackId === 'zoom-mixed' || trackId === 'teams-mixed') {
           forwardAudio(meetingId, chunk);
         } else {
           forwardTrackAudio(meetingId, chunk, trackId);

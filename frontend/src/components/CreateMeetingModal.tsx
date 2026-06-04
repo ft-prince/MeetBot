@@ -9,15 +9,17 @@ interface Props {
 
 const MEET_URL_RE  = /^https?:\/\/meet\.google\.com\/[a-z0-9-]+/i
 const ZOOM_URL_RE  = /^https?:\/\/[a-z0-9.-]*zoom\.us\/(j|wc\/join)\/\d+/i
+const TEAMS_URL_RE = /^https?:\/\/(teams\.microsoft\.com|teams\.live\.com)\//i
 
-function detectPlatform(url: string): 'meet' | 'zoom' | null {
+function detectPlatform(url: string): 'meet' | 'zoom' | 'teams' | null {
   if (MEET_URL_RE.test(url)) return 'meet'
   if (ZOOM_URL_RE.test(url)) return 'zoom'
+  if (TEAMS_URL_RE.test(url)) return 'teams'
   return null
 }
 
 function isValidMeetingUrl(url: string): boolean {
-  return MEET_URL_RE.test(url) || ZOOM_URL_RE.test(url)
+  return MEET_URL_RE.test(url) || ZOOM_URL_RE.test(url) || TEAMS_URL_RE.test(url)
 }
 
 function toLocalISO(date: string, time: string): string | null {
@@ -72,7 +74,7 @@ export function CreateMeetingModal({ open, onClose, onCreated }: Props) {
 
   const submit = async () => {
     if (!title.trim()) return setError('Title is required')
-    if (!isValidMeetingUrl(meetingUrl.trim())) return setError('Enter a valid Google Meet or Zoom link')
+    if (!isValidMeetingUrl(meetingUrl.trim())) return setError('Enter a valid Google Meet, Zoom, or Microsoft Teams link')
     const scheduledFor = toLocalISO(date, time)
     if (!scheduledFor) return setError('Pick a valid date and time')
     if (new Date(scheduledFor).getTime() < Date.now() - 60_000) {
@@ -145,7 +147,7 @@ export function CreateMeetingModal({ open, onClose, onCreated }: Props) {
               <input
                 className="input pr-20"
                 type="url"
-                placeholder="Google Meet or Zoom link"
+                placeholder="Google Meet, Zoom, or Teams link"
                 value={meetingUrl}
                 onChange={e => setMeetingUrl(e.target.value)}
               />
@@ -155,6 +157,11 @@ export function CreateMeetingModal({ open, onClose, onCreated }: Props) {
                     <>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="#2D8CFF"><rect width="24" height="24" rx="4" fill="#2D8CFF"/><path d="M15 9.5v5l3.5 2V7.5L15 9.5zM5 8a1 1 0 011-1h8a1 1 0 011 1v8a1 1 0 01-1 1H6a1 1 0 01-1-1V8z" fill="white"/></svg>
                       Zoom
+                    </>
+                  ) : detectPlatform(meetingUrl.trim()) === 'teams' ? (
+                    <>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><rect width="24" height="24" rx="4" fill="#5059C9"/><circle cx="16.5" cy="7.5" r="2.5" fill="white"/><rect x="4" y="8" width="9" height="9" rx="1.5" fill="white"/><path d="M5.5 10.5h6M8.5 10.5V15" stroke="#5059C9" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                      Teams
                     </>
                   ) : (
                     <>
