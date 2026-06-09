@@ -136,17 +136,24 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
         case 'transcript.final': {
           const name = msg.speakerName || msg.speakerLabel || '?'
           assignColor(id, name)
-          update(id, prev => ({
-            ...prev,
-            interim: null,
-            segments: [...prev.segments, {
-              id: msg.segmentId || `${Date.now()}`,
-              speakerLabel: msg.speakerLabel || null,
-              speakerName: msg.speakerName || null,
-              text: msg.text || '',
-              startMs: msg.startMs || 0,
-            }],
-          }))
+          const sid = msg.segmentId || `${Date.now()}`
+          const seg = {
+            id: sid,
+            speakerLabel: msg.speakerLabel || null,
+            speakerName: msg.speakerName || null,
+            text: msg.text || '',
+            startMs: msg.startMs || 0,
+          }
+          update(id, prev => {
+            // Upsert by id: engines like Vexa send the same segment id repeatedly as
+            // the text refines, so replace in place instead of appending duplicates.
+            // In-house finals carry unique ids, so this still behaves as an append.
+            const idx = prev.segments.findIndex(s => s.id === sid)
+            const segments = idx >= 0
+              ? prev.segments.map((s, i) => (i === idx ? seg : s))
+              : [...prev.segments, seg]
+            return { ...prev, interim: null, segments }
+          })
           break
         }
         case 'speaker.identified': {

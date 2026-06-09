@@ -133,6 +133,14 @@
   // ── Name extraction from a tile ──────────────────────────────
 
   function getName (tile) {
+    // Primary (Vexa-derived): span.notranslate — Meet's canonical name element,
+    // survives UI redesigns better than hover-button patterns.
+    const notranslate = tile.querySelector('span.notranslate')
+    if (notranslate) {
+      const t = (notranslate.textContent || '').trim()
+      if (t.length > 1 && t.length < 50 && !/^note|recorder/i.test(t)) return t
+    }
+
     // "More options for <name>" button (visible on hover)
     for (const btn of tile.querySelectorAll('button[aria-label]')) {
       const m = (btn.getAttribute('aria-label') || '').match(/^More options for (.+)$/i)
@@ -141,6 +149,14 @@
     // Data attributes
     const d = tile.getAttribute('data-self-name') || tile.getAttribute('data-participant-name')
     if (d) return d.trim()
+    // Known obfuscated name class names (may rotate with Meet releases)
+    for (const cls of ['.zWGUib', '.cS7aqe', '.XWGOtd']) {
+      const el = tile.querySelector(cls)
+      if (el) {
+        const t = (el.textContent || '').trim()
+        if (t.length > 1 && t.length < 50) return t
+      }
+    }
     // Text content repeats name twice: "PRINCE SPRINCE Sdevices" → "PRINCE S"
     const raw = (tile.textContent || '').replace(/\s+/g, ' ').trim()
     const clean = raw.replace(/\s*devices\s*$/i, '').trim()
@@ -279,17 +295,25 @@
   // class rename doesn't break detection.
   function tileIsSpeakingNow (tile) {
     try {
-      // Signal 1: any class on tile or descendant containing "speak"
+      // Signal 0 (Vexa primary): data-audio-level attribute — semantic and stable
+      // across Meet UI redesigns; set to a nonzero value while the participant speaks.
+      if (tile.querySelector('[data-audio-level]:not([data-audio-level="0"])')) return true
+
+      // Signal 1 (Vexa obfuscated classes — may rotate with Meet releases):
+      for (const cls of ['Oaajhc', 'HX2H7', 'wEsLMd', 'OgVli']) {
+        if (tile.querySelector('.' + cls)) return true
+      }
+
+      // Signal 2: any class on tile or descendant containing "speak"
       if (tile.matches('[class*="speak" i]')) return true
       if (tile.querySelector('[class*="speak" i]:not([class*="speaker-name" i])')) return true
 
-      // Signal 2: aria-label hints
+      // Signal 3: aria-label hints
       const ariaSpeaking = tile.querySelector('[aria-label*="speaking" i],[aria-label*="talking" i]')
       if (ariaSpeaking) return true
 
-      // Signal 3: animated audio meter — Meet renders a small SVG/canvas that
-      // becomes visible only while talking. We look for any small visible svg
-      // with class "google-symbols" sibling structure OR canvas inside tile.
+      // Signal 4: animated audio meter — Meet renders a small SVG/canvas visible
+      // only while talking.
       const meter = tile.querySelector('canvas, svg[class*="audio" i], svg[class*="speak" i]')
       if (meter) {
         const r = meter.getBoundingClientRect()

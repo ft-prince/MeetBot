@@ -1,0 +1,18 @@
+# PulseAudio configuration for the NoteAI bot container.
+# A null sink gives Chrome a real audio output device so WebRTC AudioContext
+# initialises correctly and the injector's AudioWorkletProcessor can run.
+
+.fail
+
+# Load the native protocol socket so pactl can talk to the daemon
+load-module module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse/native
+
+# Null sink — audio goes nowhere but the device exists
+load-module module-null-sink sink_name=VirtualSink sink_properties=device.description=VirtualSink
+
+# Set it as the default
+set-default-sink VirtualSink
+
+# Null source (microphone) — required by Chrome's MediaStream API
+load-module module-null-source source_name=VirtualSource source_properties=device.description=VirtualSource
+set-default-source VirtualSource

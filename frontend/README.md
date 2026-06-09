@@ -205,6 +205,15 @@ LiveRecording.tsx
 
 `useLiveMeetings` is a React context provider mounted in `App.tsx`. Any page can read or mutate live meeting state via `useLiveMeetings()`.
 
+### Capture engine is transparent to the frontend
+
+The `/panel` WebSocket contract above is **identical regardless of which backend capture engine is active** (`BOT_ENGINE` in `backend/.env`):
+
+- **`inhouse`** (default) — Playwright bots + a local Whisper sidecar, with Deepgram-style diarization labels resolved to real names via the backend correlator. This path emits `speaker.identified` to backfill names on already-rendered segments.
+- **`vexa`** — a self-hosted [Vexa](https://github.com/Vexa-ai/vexa) bot (no browser automation) that returns real speaker names inline on each segment. Finals already carry `speakerName`, so `speaker.identified` is simply never sent on this path — not a missing feature.
+
+Either way the frontend handles the same `bot.joined` / `transcript.*` / `meeting.ended` / `bot.error` events, so **no frontend changes are needed to switch engines**.
+
 ---
 
 ## Troubleshooting
