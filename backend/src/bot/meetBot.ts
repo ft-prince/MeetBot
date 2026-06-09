@@ -433,6 +433,10 @@ export class MeetBot {
       '[aria-label*="Ask to join" i]',
     ]
     const CANT_JOIN_GRACE = 5   // seconds before we check for hard block
+    // How long to wait in the lobby for the host to admit the bot. Late admits
+    // (host busy, joins meeting after the bot) used to fail at the old 5-min cap.
+    // Configurable via BOT_JOIN_TIMEOUT (seconds); default 15 min.
+    const MAX_WAIT_S = parseInt(process.env.BOT_JOIN_TIMEOUT || '900', 10)
 
     const hasJoinButton = async (): Promise<boolean> => {
       for (const sel of JOIN_BTNS) {
@@ -441,7 +445,7 @@ export class MeetBot {
       return false
     }
 
-    for (let i = 0; i < 300; i++) {
+    for (let i = 0; i < MAX_WAIT_S; i++) {
       if (this.ended) return
 
       // Only check for hard block after grace period — waiting rooms can look like errors
@@ -464,11 +468,11 @@ export class MeetBot {
       }
 
       if (i > 0 && i % 30 === 0) {
-        console.log(`[bot] Waiting for meeting UI (${i}s) — may be in waiting room, please admit the bot`)
+        console.log(`[bot] Waiting for meeting UI (${i}s/${MAX_WAIT_S}s) — may be in waiting room, please admit the bot`)
       }
       await page.waitForTimeout(1000).catch(() => {})
     }
-    console.warn('[bot] Meeting UI not detected after 5 min')
+    console.warn(`[bot] Meeting UI not detected after ${MAX_WAIT_S}s — host never admitted the bot`)
     this.ended = true
   }
 
@@ -515,15 +519,26 @@ export class MeetBot {
       if (this.ended) { clearInterval(iv); return }
       if (Date.now() - joinedAt < GRACE_MS) return
       try {
-        const count = await page.evaluate(() =>
-          Array.from(document.querySelectorAll('[data-participant-id]')).filter(t =>
-            Array.from(t.querySelectorAll('button[aria-label]')).some(b =>
-              /^More options for /i.test(b.getAttribute('aria-label') || '')
-            )
-          ).length
-        )
-        if (count === 0) {
-          if (!aloneAt) { aloneAt = Date.now(); console.log('[bot] Alone — will leave in 2 min') }
+        // Count OTHER participants robustly, independent of hover state.
+        // "More options for X" buttons only render on hover, so counting them
+        // mis-reads 0 when participants are present but silent/unhovered — which
+        // would make the bot wrongly leave. Instead count participant tiles
+        // (the bot is one tile) and read the people-count badge as a fallback.
+        const count = await page.evaluate(() => {
+          const tiles = document.querySelectorAll('[data-participant-id]').length
+          // Meet shows a participant count badge (e.g. on the People button).
+          let badge = 0
+          for (const el of Array.from(document.querySelectorAll('[aria-label]'))) {
+            const m = (el.getAttribute('aria-label') || '').match(/(\d+)\s+(participant|people|in the (call|meeting))/i)
+            if (m) { badge = Math.max(badge, parseInt(m[1], 10)); }
+          }
+          // Others = total minus the bot's own tile. Prefer the larger of the two
+          // signals so a transient empty tile-list doesn't trigger a false "alone".
+          const others = Math.max(tiles - 1, badge - 1, 0)
+          return others
+        })
+        if (count <= 0) {
+          if (!aloneAt) { aloneAt = Date.now(); console.log('[bot] Alone (no other participants) — will leave in 2 min') }
           else if (Date.now() - aloneAt >= ALONE_MS) {
             console.log('[bot] Alone 2 min — leaving'); clearInterval(iv)
             if (!this.ended) { this.ended = true; onEnded?.(); await this.stop() }

@@ -8,23 +8,37 @@
 //
 //   B) A single mixed remote stream (most common on the Teams web client):
 //      one decoded audio stream rendered through the Web Audio graph or an
-//      <audio>.srcObject. There is no per-participant track — we forward ONE
-//      mixed stream (trackId = 'teams-mixed') and the backend tags each segment
-//      with the live DOM active-speaker.
+//      <audio>.srcObject. There is no per-participant track.
 //
-// Bridges exposed by teamsBot.ts:
+//      When Teams live captions are enabled, we use caption-driven routing:
+//        1. Audio is buffered in a sliding ring buffer (MAX_QUEUE_AGE_MS).
+//        2. Caption DOM (`[data-tid="author"]`) identifies who is speaking.
+//        3. On speaker change: recent audio (last 2 s) is flushed to the new
+//           speaker's virtual track, absorbing the caption delay gap.
+//        4. On text growth: buffered chunks are flushed to the current speaker.
+//        5. Each unique speaker name becomes its own virtual trackId, giving
+//           the backend a dedicated Deepgram stream per participant.
+//      When captions are NOT enabled or not yet seen, we fall back to sending
+//      as 'teams-mixed' with DOM active-speaker events (existing behaviour).
+//
+// Bridges exposed by teamsBot.ts (and wsBridge.ts in the Docker bot):
 //   window.noteAISendTrackAudio(samples, trackId)
 //   window.noteAISendTrackInfo (trackId, name)
 //   window.noteAISendEvent     (json)
 
 ;(function () {
   const SAMPLE_RATE = 16000
-  const CHUNK_SAMPLES = SAMPLE_RATE * 0.15
+  const CHUNK_SAMPLES = SAMPLE_RATE * 0.15   // 150 ms chunks
   const MIX_TRACK_ID = 'teams-mixed'
   const ENERGY_THRESHOLD = 6
   const SELECT_FALLBACK_MS = 2500
   const COOCCUR_LOCK = 3
   const LOUD_THRESHOLD_RTC = 8
+
+  // Caption routing constants (mirrors Vexa recording.ts approach)
+  const MAX_QUEUE_AGE_MS = 10000   // keep up to 10 s of audio
+  const CAPTION_LOOKBACK_MS = 2000 // flush this much history on speaker change
+  const MIN_TEXT_GROWTH = 3        // ignore refinements smaller than this
 
   let captureCtx = null
   const seenTrackIds = new Set()
@@ -39,6 +53,138 @@
   let mixActive = null
   let mixFirstSeenAt = 0
 
+  // ── Caption-driven per-speaker routing ─────────────────────────────────────
+  // audioQueue holds Int16Array chunks (already format-converted) waiting to be
+  // routed to the correct speaker. Cleared/flushed on caption events.
+  const audioQueue = []  // { samples: number[], ts: number }
+  let captionMode = false         // true once first caption is detected
+  let lastCaptionSpeaker = null   // speaker name from last processed caption
+  let lastFlushedTextLen = 0      // to detect new words vs. punctuation edits
+
+  function queueChunk (samples) {
+    const now = Date.now()
+    audioQueue.push({ samples, ts: now })
+    // Prune entries older than MAX_QUEUE_AGE_MS
+    while (audioQueue.length > 0 && now - audioQueue[0].ts > MAX_QUEUE_AGE_MS) {
+      audioQueue.shift()
+    }
+  }
+
+  function flushQueue (speaker) {
+    let flushed = 0
+    while (audioQueue.length > 0) {
+      const c = audioQueue.shift()
+      if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(c.samples, speaker)
+      flushed++
+    }
+    return flushed
+  }
+
+  // Decides where to send a mixed-stream chunk.
+  // RTC tracks bypass this entirely (they have their own named forwarding).
+  function routeMixedChunk (samples) {
+    queueChunk(samples)
+
+    if (captionMode && lastCaptionSpeaker) {
+      // Caption mode: flush is driven by processCaptions(); don't double-send.
+      // Audio accumulates in the queue until a caption event drains it.
+      return
+    }
+
+    // Fallback (no captions yet): send immediately as the mixed stream so the
+    // backend keeps transcribing with DOM-based speaker attribution.
+    if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(samples, MIX_TRACK_ID)
+  }
+
+  // ── Caption DOM observation ─────────────────────────────────────────────────
+  const CAPTION_WRAPPER_SEL  = '[data-tid="closed-caption-renderer-wrapper"]'
+  const CAPTION_AUTHOR_SEL   = '[data-tid="author"]'
+  const CAPTION_TEXT_SEL     = '[data-tid="closed-caption-text"]'
+
+  let lastCaptionKey = ''
+
+  function processCaptions () {
+    const wrapper = document.querySelector(CAPTION_WRAPPER_SEL)
+    if (!wrapper) return
+
+    const authors = wrapper.querySelectorAll(CAPTION_AUTHOR_SEL)
+    const texts   = wrapper.querySelectorAll(CAPTION_TEXT_SEL)
+    if (!authors.length || !texts.length) return
+
+    // Use the LAST pair — most recent caption entry (host/guest have different DOM
+    // nesting but author + text stable atoms are always paired by document order).
+    const speaker = (authors[authors.length - 1].textContent || '').trim()
+    const text    = (texts[texts.length - 1].textContent || '').trim()
+    if (!speaker || !text) return
+
+    // Skip the bot's own speech
+    if (/note.?ai.?recorder|noteai|note.*?recorder/i.test(speaker)) return
+
+    const key = speaker + '::' + text
+    if (key === lastCaptionKey) return
+    lastCaptionKey = key
+
+    const now = Date.now()
+
+    if (speaker !== lastCaptionSpeaker) {
+      // Speaker changed. Discard audio older than CAPTION_LOOKBACK_MS (stale
+      // silence / previous speaker's tail), then flush recent lookback to the
+      // new speaker so their opening words are not lost to the caption delay.
+      captionMode = true
+      lastFlushedTextLen = 0
+
+      const cutoff = now - CAPTION_LOOKBACK_MS
+      let discarded = 0
+      while (audioQueue.length > 0 && audioQueue[0].ts < cutoff) {
+        audioQueue.shift(); discarded++
+      }
+      const flushed = flushQueue(speaker)
+      console.log('[NoteAI] Teams caption → ' + speaker +
+        ' (flushed ' + flushed + ', discarded ' + discarded + ')')
+
+      // Register the speaker name so the backend creates a dedicated Deepgram
+      // stream and attributes transcripts correctly.
+      if (window.noteAISendTrackInfo) window.noteAISendTrackInfo(speaker, speaker)
+      lastCaptionSpeaker = speaker
+      return
+    }
+
+    // Same speaker — flush when text has grown by new words (not just edits).
+    const growth = text.length - lastFlushedTextLen
+    if (growth > MIN_TEXT_GROWTH || text.length < lastFlushedTextLen) {
+      if (audioQueue.length > 0) {
+        flushQueue(speaker)
+      }
+      lastFlushedTextLen = text.length
+    }
+  }
+
+  function startCaptionObserver () {
+    const wrapper = document.querySelector(CAPTION_WRAPPER_SEL)
+    if (!wrapper) return false
+    console.log('[NoteAI] Teams caption wrapper found — caption-driven routing ACTIVE')
+    const obs = new MutationObserver(processCaptions)
+    obs.observe(wrapper, { childList: true, subtree: true, characterData: true })
+    // Backup poll — catches virtual-DOM updates that bypass MutationObserver.
+    setInterval(processCaptions, 200)
+    return true
+  }
+
+  // Poll until the caption container appears (user must enable captions in Teams).
+  const captionDetectInterval = setInterval(() => {
+    if (startCaptionObserver()) clearInterval(captionDetectInterval)
+  }, 2000)
+
+  // Also watch body for the wrapper to be inserted.
+  const captionBodyWatcher = new MutationObserver(() => {
+    if (captionMode || startCaptionObserver()) {
+      captionBodyWatcher.disconnect()
+      clearInterval(captionDetectInterval)
+    }
+  })
+  captionBodyWatcher.observe(document.body, { childList: true, subtree: true })
+
+  // ── AudioWorklet + ScriptProcessor forwarding ───────────────────────────────
   function ensureCaptureCtx () {
     if (!captureCtx) {
       captureCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE })
@@ -46,7 +192,6 @@
     return captureCtx
   }
 
-  // ── AudioWorklet (preferred) with ScriptProcessor fallback ────────────────
   let workletReady = null
   function initWorklet (ctx) {
     if (workletReady) return workletReady
@@ -87,18 +232,26 @@
     return workletReady
   }
 
-  // Build a PCM pipeline on `source` that posts chunks tagged with `trackId`.
   async function startForwarding (source, trackId) {
     const ctx = captureCtx
+    const isMix = trackId === MIX_TRACK_ID
     const ok = await initWorklet(ctx)
+
     if (ok) {
       const node = new AudioWorkletNode(ctx, 'pcm-sender')
       node.port.onmessage = (e) => {
-        if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(Array.from(new Int16Array(e.data)), trackId)
+        const samples = Array.from(new Int16Array(e.data))
+        if (isMix) {
+          routeMixedChunk(samples)
+        } else {
+          if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(samples, trackId)
+        }
       }
       source.connect(node)
       return
     }
+
+    // ScriptProcessor fallback
     const proc = ctx.createScriptProcessor(2048, 1, 1)
     let buf = [], n = 0
     proc.onaudioprocess = (e) => {
@@ -112,7 +265,12 @@
       if (n >= CHUNK_SAMPLES) {
         const out = new Int16Array(n); let off = 0
         for (const b of buf) { out.set(b, off); off += b.length }
-        if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(Array.from(out), trackId)
+        const samples = Array.from(out)
+        if (isMix) {
+          routeMixedChunk(samples)
+        } else {
+          if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(samples, trackId)
+        }
         buf = []; n = 0
       }
     }
@@ -120,7 +278,7 @@
     source.connect(proc); proc.connect(mute); mute.connect(ctx.destination)
   }
 
-  // ── captureTrack: dispatches into the path that matches the source ────────
+  // ── captureTrack: dispatches into the path that matches the source ──────────
   function captureTrack (track, sourceLabel) {
     try {
       if (!track || track.kind !== 'audio' || seenTrackIds.has(track.id)) return
@@ -147,8 +305,7 @@
     }
   }
 
-  // Energy-pick one mixed candidate (only when there are NO RTC tracks — they
-  // already carry all participants and we must not double-transcribe).
+  // Energy-pick one mixed candidate (only when there are NO RTC tracks).
   function selectMixActive () {
     if (mixActive || mixCandidates.size === 0) return
     if (rtcTracks.size > 0) return
@@ -170,9 +327,7 @@
     }
   }
 
-  // Per-RTC-track co-occurrence: when exactly ONE track is loud while the DOM
-  // shows active speaker = X for several consecutive samples, bind that track
-  // to X and tell the backend (noteAISendTrackInfo). Locked tracks stay bound.
+  // Per-RTC-track co-occurrence: bind track → speaker via DOM active-speaker.
   function pollRtcCooccurrence () {
     if (rtcTracks.size === 0) return
     const loud = []
@@ -272,7 +427,7 @@
   function cleanName (raw) {
     let name = (raw || '').trim()
     name = name.replace(/,\s*(unmuted|muted|speaking|host|co-host|organizer|presenter|guest).*$/i, '').trim()
-    // Teams sometimes renders the name doubled in nested nodes.
+    name = name.replace(/\s*\((guest|host|co-host|organizer|presenter|external)\)\s*$/i, '').trim()
     if (name.length >= 4 && name.length % 2 === 0) {
       const half = name.length / 2
       if (name.slice(0, half) === name.slice(half)) name = name.slice(0, half)
@@ -281,9 +436,73 @@
     return name
   }
 
+  function extractNameFrom (el) {
+    let node = el
+    for (let depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+      const aria = node.getAttribute && node.getAttribute('aria-label')
+      if (aria) {
+        const m = aria.match(/(.+?)\s+is speaking/i)
+        const name = cleanName(m ? m[1] : aria)
+        if (name) return name
+      }
+      if (!node.querySelector) continue
+      const nameEl = node.querySelector(
+        '[data-tid="roster-cell-displayname"], [data-tid*="display-name" i], ' +
+        '[data-tid="calling-participant-name"], [data-tid*="participant-name" i], ' +
+        '[class*="displayName" i], [title], [aria-label]'
+      )
+      if (nameEl) {
+        const raw = nameEl.getAttribute('aria-label') || nameEl.getAttribute('title') || nameEl.textContent
+        const m = (raw || '').match(/(.+?)\s+is speaking/i)
+        const name = cleanName(m ? m[1] : raw)
+        if (name) return name
+      }
+    }
+    return null
+  }
+
+  function isVisible (el) {
+    if (!el || !el.offsetParent) return false
+    try {
+      const s = getComputedStyle(el)
+      return s.visibility !== 'hidden' && s.display !== 'none' && parseFloat(s.opacity || '1') > 0.05
+    } catch { return true }
+  }
+
+  // Strategy 0 — roster speaking indicator (most stable signal).
+  function getActiveSpeakerFromRoster () {
+    const cells = Array.from(document.querySelectorAll(
+      '[data-tid="roster-cell-name"], [data-tid="roster-participant"], [role="treeitem"]'
+    ))
+    const speaking = []
+    for (const cell of cells) {
+      let container = cell
+      for (let d = 0; d < 4 && container.parentElement; d++) {
+        if (container.querySelector && container.querySelector('[data-tid="roster-cell-name"]')) break
+        container = container.parentElement
+      }
+      const speaks = !!container.querySelector && (
+        container.querySelector('[class*="speaking" i]') ||
+        container.querySelector('[class*="voiceLevel" i], [class*="voice-level" i]') ||
+        container.querySelector('[data-tid*="voice-level" i]:not(.vdi-frame-occlusion)') ||
+        container.querySelector('[aria-label*="speaking" i]')
+      )
+      if (!speaks) continue
+      const nameEl = container.querySelector('[data-tid="roster-cell-name"]') || container
+      const raw = nameEl.getAttribute('title') || nameEl.textContent
+      const name = cleanName((raw || '').replace(/\s+is speaking.*$/i, ''))
+      if (name) speaking.push(name)
+    }
+    const unique = [...new Set(speaking)]
+    return unique.length === 1 ? unique[0] : null
+  }
+
   function getTeamsActiveSpeaker () {
-    // Teams marks the dominant/active speaker tile with a "speaking" ring and
-    // exposes the name via aria-label / title. Selectors ordered best-first.
+    try {
+      const rosterName = getActiveSpeakerFromRoster()
+      if (rosterName) return rosterName
+    } catch {}
+
     const selectors = [
       '[data-tid="participant-speaking-indicator"][aria-label]',
       '[class*="speaking"][aria-label]',
@@ -296,14 +515,69 @@
         const el = document.querySelector(sel)
         if (el) {
           const raw = el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent
-          // aria-label often reads "<Name> is speaking"
           const m = (raw || '').match(/(.+?)\s+is speaking/i)
           const name = cleanName(m ? m[1] : raw)
           if (name) return name
         }
       } catch {}
     }
+
+    // voice-level-stream-outline: active speaker's outline does NOT have vdi-frame-occlusion.
+    try {
+      const outlines = Array.from(document.querySelectorAll('[data-tid="voice-level-stream-outline"]'))
+      const active = outlines.filter(el => !(el.getAttribute('class') || '').includes('vdi-frame-occlusion'))
+      if (active.length === 1) {
+        const name = extractNameFrom(active[0])
+        if (name) return name
+      }
+    } catch {}
+
+    try {
+      const flagged = Array.from(document.querySelectorAll(
+        '[class*="speaking" i], [class*="active-speaker" i]'
+      )).filter(isVisible)
+      if (flagged.length === 1) {
+        const name = extractNameFrom(flagged[0])
+        if (name) return name
+      }
+    } catch {}
+
     return null
+  }
+
+  // Diagnostic dump — fires early in the session to help pin live selectors.
+  const DIAG_MAX = 10
+  const DIAG_EVERY_POLLS = 10
+  let diagDumps = 0
+  let diagPollCount = 0
+  let detectedOnce = false
+  function dumpSpeakingCandidates () {
+    if (detectedOnce || diagDumps >= DIAG_MAX) return
+    if (diagPollCount++ % DIAG_EVERY_POLLS !== 0) return
+    diagDumps++
+    let outlines = []
+    try {
+      outlines = Array.from(document.querySelectorAll('[data-tid="voice-level-stream-outline"]'))
+    } catch {}
+    if (outlines.length === 0) {
+      console.log('[NoteAI][diag] no voice-level-stream-outline elements (dump ' + diagDumps + '/' + DIAG_MAX + ')')
+      return
+    }
+    const active = outlines.filter(el => !(el.getAttribute('class') || '').includes('vdi-frame-occlusion'))
+    const target = active.length === 1 ? active[0] : outlines[0]
+    console.log('[NoteAI][diag] outlines=' + outlines.length + ' active=' + active.length +
+      ' extractName="' + (extractNameFrom(target) || '?') + '"')
+    let node = target
+    for (let d = 0; node && d < 10; d++, node = node.parentElement) {
+      const tag = node.tagName ? node.tagName.toLowerCase() : '?'
+      const tid = (node.getAttribute && node.getAttribute('data-tid')) || ''
+      const aria = ((node.getAttribute && node.getAttribute('aria-label')) || '').slice(0, 50)
+      const title = (node.getAttribute && node.getAttribute('title')) || ''
+      const role = (node.getAttribute && node.getAttribute('role')) || ''
+      const txt = (node.textContent || '').trim().slice(0, 40)
+      console.log('[NoteAI][diag]  ^' + d + ' <' + tag + '> tid="' + tid + '" role="' + role +
+        '" aria="' + aria + '" title="' + title + '" text="' + txt + '"')
+    }
   }
 
   function sendEvent (payload) {
@@ -314,9 +588,14 @@
   function pollActiveSpeaker () {
     let name = null
     try { name = getTeamsActiveSpeaker() } catch {}
+    if (!name) { dumpSpeakingCandidates(); }
     if (name === lastSpeaker) return
     if (lastSpeaker) sendEvent({ type: 'speaker_end', name: lastSpeaker, endMs: Date.now() })
-    if (name) { sendEvent({ type: 'speaker_start', name, startMs: Date.now() }); console.log('[NoteAI] active speaker:', name) }
+    if (name) {
+      detectedOnce = true
+      sendEvent({ type: 'speaker_start', name, startMs: Date.now() })
+      console.log('[NoteAI] active speaker:', name)
+    }
     lastSpeaker = name
   }
 
