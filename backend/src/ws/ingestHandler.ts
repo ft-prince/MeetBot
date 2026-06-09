@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import { URL } from 'url';
-import { DeepgramClient as WhisperClient } from './deepgramClient';
+import { createSttClient, type SttClient } from './sttClient';
 import { SpeakerCorrelator } from '../services/speakerCorrelator';
 import type { IdentifiedSegment } from '../services/speakerCorrelator';
 import {
@@ -22,17 +22,30 @@ interface Session {
   meetingId: string;       // DB UUID
   meetingCode: string;     // e.g. "abc-defg-hij"
   panelClients: Set<WebSocket>;
-  whisper: WhisperClient;
+  whisper: SttClient;
   correlator: SpeakerCorrelator;
   startedAt: number;
   isAudioSource: boolean;
   // Per-participant track transcription (replaces merged audio)
-  trackWhispers: Map<string, WhisperClient>;  // trackId → WhisperClient
+  trackWhispers: Map<string, SttClient>;  // trackId → STT client
   trackNames: Map<string, string>;            // trackId → participant name
+  // Stable display label per unique (trackId, Deepgram-diarized speaker) pair.
+  // Teams mixes all remote participants into one RTC track, so a single track
+  // can carry several speakers; Deepgram's per-word diarization separates them.
+  speakerLabels: Map<string, string>;         // `${trackId}:${diarizedLabel}` → "Speaker N"
+  // Real name resolved for a diarized speaker, once confidently bound.
+  speakerNames: Map<string, string>;          // `${trackId}:${diarizedLabel}` → participant name
+  // Co-occurrence votes: how often each DOM active speaker was talking while a
+  // given diarized speaker's segments finalised. Dominant name wins once locked.
+  speakerVotes: Map<string, Map<string, number>>; // `${trackId}:${diarizedLabel}` → (name → count)
   // Live active speaker (Zoom mixed-stream path): set from DOM speaker_start
   // events and used to tag transcript segments, since a single mixed stream
   // can't be diarized reliably per participant.
   currentSpeaker: string | null;
+  // Human participants observed in the roster (bot excluded). On a mixed stream
+  // with no live active-speaker signal, a single known participant lets us
+  // attribute all speech to them (the common 1:1 case).
+  knownParticipants: Set<string>;
 }
 
 // Map from meetingCode → session (so panel can join same session)
@@ -74,7 +87,7 @@ async function handleAudioSource(ws: WebSocket, meetingCode: string): Promise<vo
     const correlator = new SpeakerCorrelator();
     const panelClients = new Set<WebSocket>();
 
-    const whisper = new WhisperClient(
+    const whisper = createSttClient(
       (segment, isFinal) => {
         const identified = correlator.correlate(segment);
 
@@ -120,7 +133,11 @@ async function handleAudioSource(ws: WebSocket, meetingCode: string): Promise<vo
       isAudioSource: true,
       trackWhispers: new Map(),
       trackNames: new Map(),
+      speakerLabels: new Map(),
+      speakerNames: new Map(),
+      speakerVotes: new Map(),
       currentSpeaker: null,
+      knownParticipants: new Set(),
     };
 
     sessions.set(meetingCode, session);
@@ -129,16 +146,38 @@ async function handleAudioSource(ws: WebSocket, meetingCode: string): Promise<vo
 
   wsToSession.set(ws, session);
 
+  // Per-connection active track — Docker bot sends `track_select` before binary
+  // to route PCM into a per-participant Deepgram client instead of the main one.
+  // Null = legacy mode (binary goes to the shared mixed-stream whisper).
+  let currentTrackId: string | null = null;
+
   // Binary frames = PCM audio chunks
   ws.on('message', (data, isBinary) => {
     if (isBinary) {
-      session!.whisper.sendAudio(data as Buffer);
+      if (currentTrackId) {
+        forwardTrackAudio(meetingCode, data as Buffer, currentTrackId);
+      } else {
+        session!.whisper.sendAudio(data as Buffer);
+      }
       return;
     }
 
-    // Text frames = JSON control messages from content.js
+    // Text frames = JSON control messages
     try {
       const msg = JSON.parse(data.toString());
+
+      // Per-track routing protocol (Docker bot / future extension):
+      //   track_select  — select which track subsequent binary frames belong to
+      //   track_info    — bind a human name to a track id
+      if (msg.type === 'track_select') {
+        currentTrackId = (msg.trackId as string) || null;
+        return;
+      }
+      if (msg.type === 'track_info') {
+        setTrackName(meetingCode, msg.trackId as string, msg.name as string);
+        return;
+      }
+
       handleControlMessage(session!, msg);
     } catch {
       // not JSON, ignore
@@ -219,6 +258,7 @@ function handleControlMessage(session: Session, msg: Record<string, unknown>): v
   // When only one participant is known, auto-assign all unresolved SPEAKER_X to them
   if (type === 'participant_known') {
     const name = msg.name as string;
+    session.knownParticipants.add(name);
     session.correlator.registerParticipant(name);
 
     // Only auto-assign if there is exactly 1 known participant AND exactly 1 active track
@@ -271,13 +311,22 @@ export async function createBotSession(meetingCode: string, userId?: string): Pr
   const correlator = new SpeakerCorrelator();
   const panelClients = new Set<WebSocket>();
 
-  const whisper = new WhisperClient(
+  const whisper = createSttClient(
     (segment, isFinal) => {
       const identified = correlator.correlate(segment);
-      // Prefer the live active speaker (Zoom mixed stream) over Deepgram's
-      // diarization label, which is unreliable on a single combined stream.
-      const live = sessions.get(meetingCode)?.currentSpeaker ?? null;
-      const speakerName = live ?? identified.speakerName;
+      // Naming priority on a single mixed stream:
+      //   1. live DOM active speaker (most precise, drives multi-party meetings)
+      //   2. the sole known human participant — covers the common 1:1 case even
+      //      when active-speaker DOM detection fails (e.g. Teams web)
+      //   3. whatever the correlator resolved (may be null)
+      // The Deepgram diarization label is unreliable on a combined stream, so we
+      // override it whenever a real name is available.
+      const sess = sessions.get(meetingCode);
+      const live = sess?.currentSpeaker ?? null;
+      const sole = sess && sess.knownParticipants.size === 1
+        ? [...sess.knownParticipants][0]
+        : null;
+      const speakerName = live ?? sole ?? identified.speakerName;
       const speakerLabel = live ?? identified.speakerLabel;
       const tagged: IdentifiedSegment = { ...identified, speakerName, speakerLabel };
 
@@ -313,7 +362,11 @@ export async function createBotSession(meetingCode: string, userId?: string): Pr
     isAudioSource: true,
     trackWhispers: new Map(),
     trackNames: new Map(),
+    speakerLabels: new Map(),
+    speakerNames: new Map(),
+    speakerVotes: new Map(),
     currentSpeaker: null,
+    knownParticipants: new Set(),
   });
 
   console.log(`[session] Bot session created for ${meetingCode} (db: ${meeting.id})`);
@@ -331,20 +384,71 @@ export function forwardEvent(meetingCode: string, event: Record<string, unknown>
   handleControlMessage(session, event);
 }
 
+// Number of co-occurrence votes a name needs before it is bound to a speaker.
+const MIN_VOTES_TO_BIND = 3;
+
+// Map a (track, Deepgram-diarized speaker) pair to a stable "Speaker N" label.
+// One mixed track (e.g. Teams) can carry several diarized speakers, so labels
+// are allocated per unique pair and reused for the life of the session.
+function resolveSpeakerLabel(session: Session, key: string): string {
+  const existing = session.speakerLabels.get(key);
+  if (existing) return existing;
+  const label = `Speaker ${session.speakerLabels.size + 1}`;
+  session.speakerLabels.set(key, label);
+  return label;
+}
+
+// Attribute a real participant name to a diarized speaker by majority
+// co-occurrence with the live DOM active speaker. One vote is cast per finalised
+// segment; once a name leads with enough support it is bound for the rest of the
+// session, persisted to past segments, and pushed to the panel. Returns the
+// resolved name, or null while still ambiguous.
+function resolveSpeakerName(session: Session, key: string, label: string): string | null {
+  const bound = session.speakerNames.get(key);
+  if (bound) return bound;
+
+  const voter = session.currentSpeaker;
+  if (!voter) return null;
+
+  const votes = session.speakerVotes.get(key) ?? new Map<string, number>();
+  votes.set(voter, (votes.get(voter) ?? 0) + 1);
+  session.speakerVotes.set(key, votes);
+
+  let bestName: string | null = null;
+  let bestCount = 0;
+  for (const [name, count] of votes) {
+    if (count > bestCount) { bestCount = count; bestName = name; }
+  }
+  if (!bestName || bestCount < MIN_VOTES_TO_BIND) return null;
+
+  session.speakerNames.set(key, bestName);
+  console.log(`[session] Bound ${label} → "${bestName}" (${bestCount} votes)`);
+  broadcastToPanel(session.panelClients, {
+    type: 'speaker.identified',
+    label,
+    name: bestName,
+    meetingId: session.meetingId,
+  });
+  updateSpeakerName(session.meetingId, label, bestName).catch(console.error);
+  return bestName;
+}
+
 // Per-participant audio: one whisper client per track
 export function forwardTrackAudio(meetingCode: string, chunk: Buffer, trackId: string): void {
   const session = sessions.get(meetingCode);
   if (!session) return;
 
   if (!session.trackWhispers.has(trackId)) {
-    const trackIndex = session.trackWhispers.size + 1;
-    const shortLabel = `Speaker ${trackIndex}`;
-    const speakerName = () => session.trackNames.get(trackId) ?? null;
-
-    const w = new WhisperClient(
+    const w = createSttClient(
       (segment, isFinal) => {
-        const name = speakerName();
-        const label = name ?? shortLabel;
+        const key = `${trackId}:${segment.speakerLabel}`;
+        // Stable label so the panel can remap a speaker once their name is known.
+        const label = resolveSpeakerLabel(session, key);
+        // An explicit per-track name (true per-participant tracks) wins; otherwise
+        // attribute via DOM active-speaker voting (mixed tracks like Teams).
+        let name = session.trackNames.get(trackId) ?? session.speakerNames.get(key) ?? null;
+        if (!name && isFinal) name = resolveSpeakerName(session, key, label);
+
         const identified = { ...segment, speakerName: name, speakerLabel: label };
         broadcastToPanel(session.panelClients, {
           type: isFinal ? 'transcript.final' : 'transcript.interim',
@@ -362,7 +466,7 @@ export function forwardTrackAudio(meetingCode: string, chunk: Buffer, trackId: s
     );
     w.connect();
     session.trackWhispers.set(trackId, w);
-    console.log(`[session] New whisper client for track ${trackId.slice(0, 8)} → ${shortLabel}`);
+    console.log(`[session] New whisper client for track ${trackId.slice(0, 8)}`);
   }
 
   session.trackWhispers.get(trackId)!.sendAudio(chunk);

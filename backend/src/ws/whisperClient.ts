@@ -4,18 +4,28 @@ import type { TranscriptSegment } from '../services/speakerCorrelator';
 
 export type OnTranscriptCallback = (segment: TranscriptSegment, isFinal: boolean) => void;
 
-const WHISPER_URL = 'ws://localhost:3002';
+const DEFAULT_WHISPER_URL = 'ws://localhost:3002';
 const RECONNECT_DELAY_MS = 3000;
 
+/**
+ * WebSocket client for a Python STT sidecar speaking the simple
+ * "binary PCM in → transcript JSON out" protocol. Used for both the WhisperX
+ * service (:3002) and the AIKosh IndicConformer service (:3003) — identical
+ * wire protocol, only the URL differs.
+ */
 export class WhisperClient {
   private ws: WebSocket | null = null;
   private isOpen = false;
   private shouldReconnect = true;
+  private readonly url: string;
 
   constructor(
     private readonly onTranscript: OnTranscriptCallback,
-    private readonly onError?: (err: unknown) => void
-  ) {}
+    private readonly onError?: (err: unknown) => void,
+    url?: string
+  ) {
+    this.url = url || DEFAULT_WHISPER_URL;
+  }
 
   connect(): void {
     this.shouldReconnect = true;
@@ -35,8 +45,8 @@ export class WhisperClient {
   }
 
   private openSocket(): void {
-    console.log('[whisper-client] Connecting to whisper service...');
-    this.ws = new WebSocket(WHISPER_URL);
+    console.log(`[whisper-client] Connecting to STT service at ${this.url}...`);
+    this.ws = new WebSocket(this.url);
 
     this.ws.on('open', () => {
       this.isOpen = true;
