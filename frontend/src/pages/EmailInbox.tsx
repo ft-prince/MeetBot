@@ -1,12 +1,23 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Topbar } from '../components/Topbar'
 import { AnalysisProgressPanel } from '../components/AnalysisProgress'
+import { useAuth } from '../context/AuthContext'
 import { api } from '../lib/api'
 import type { EmailThread, EmailSyncState } from '../lib/types'
 
+// Mirrors SYNC_WINDOW_OPTIONS / DEFAULT_SYNC_DAYS on the backend. The server
+// snaps anything else to the nearest allowed value, so drift degrades quietly.
+const SYNC_DAY_OPTIONS = [10, 15, 30]
+const DEFAULT_SYNC_DAYS = 30
+
 export function EmailInbox() {
   const navigate = useNavigate()
+  // The server clamps the window to the plan anyway; offering 30 days to a Free
+  // user would just silently sync 10 and make the button label a lie.
+  const { user } = useAuth()
+  const planSyncLimit = user?.usage.emailSyncDays ?? SYNC_DAY_OPTIONS[0]
+  const allowedSyncDays = SYNC_DAY_OPTIONS.filter(d => d <= planSyncLimit)
   const [threads, setThreads] = useState<EmailThread[]>([])
   const [total, setTotal] = useState(0)
   const [syncState, setSyncState] = useState<EmailSyncState | null>(null)
@@ -16,6 +27,7 @@ export function EmailInbox() {
   const [page, setPage] = useState(0)
   const [unreadOnly, setUnreadOnly] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [syncDays, setSyncDays] = useState(Math.min(DEFAULT_SYNC_DAYS, planSyncLimit))
 
   const LIMIT = 30
 
@@ -41,6 +53,8 @@ export function EmailInbox() {
     try {
       const { syncState: s } = await api.emailSyncStatus()
       setSyncState(s)
+      // A stored preference can outlive a paid plan, so re-clamp on load.
+      if (s?.syncDays) setSyncDays(Math.min(s.syncDays, planSyncLimit))
     } catch {}
   }
 
@@ -54,7 +68,7 @@ export function EmailInbox() {
   const handleSync = async () => {
     setSyncing(true)
     try {
-      await api.syncEmails()
+      await api.syncEmails(syncDays)
       await loadThreads()
       await loadSyncState()
     } catch (err) {
@@ -64,10 +78,16 @@ export function EmailInbox() {
     }
   }
 
-  const handleBatchAnalyze = async () => {
+  // Analyzes only threads inside the sync window. A full-mailbox re-analysis is
+  // deliberately behind a confirm — it is the expensive path.
+  const handleBatchAnalyze = async (allTime = false) => {
+    if (allTime && !confirm(
+      'Re-analyze every synced thread, including ones older than your sync window?\n\n' +
+      'This sends far more email to the AI and takes noticeably longer.',
+    )) return
     setAnalyzing(true)
     try {
-      await api.batchAnalyzeEmails()
+      await api.batchAnalyzeEmails(20, allTime)
     } catch (err) {
       alert((err as Error).message)
     } finally {
@@ -97,14 +117,50 @@ export function EmailInbox() {
                 <div className="text-xs text-muted mt-0.5">
                   Last synced: {lastSyncLabel}
                   {syncState?.totalSynced ? ` · ${syncState.totalSynced} threads` : ''}
+                  {` · AI analyzes the last ${syncDays} days`}
+                  {planSyncLimit < SYNC_DAY_OPTIONS[SYNC_DAY_OPTIONS.length - 1] && (
+                    <>
+                      {' · '}
+                      <Link to="/pricing" className="text-accent font-semibold hover:underline">
+                        Upgrade for a longer window
+                      </Link>
+                    </>
+                  )}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 items-center">
+                <label className="flex items-center gap-1.5 text-xs text-muted">
+                  <span className="hidden sm:inline">Period</span>
+                  <select
+                    value={syncDays}
+                    onChange={e => setSyncDays(Number(e.target.value))}
+                    disabled={syncing}
+                    className="input w-auto py-1.5 text-xs cursor-pointer"
+                    aria-label="Sync period in days"
+                  >
+                    {allowedSyncDays.map(d => (
+                      <option key={d} value={d}>Last {d} days</option>
+                    ))}
+                  </select>
+                </label>
                 <button onClick={handleSync} disabled={syncing} className="btn btn-primary btn-sm flex-1 sm:flex-none">
                   {syncing ? 'Syncing…' : 'Sync Emails'}
                 </button>
-                <button onClick={handleBatchAnalyze} disabled={analyzing} className="btn btn-secondary btn-sm flex-1 sm:flex-none">
-                  {analyzing ? 'Analyzing…' : 'Analyze All'}
+                <button
+                  onClick={() => handleBatchAnalyze(false)}
+                  disabled={analyzing}
+                  title={`Analyze threads from the last ${syncDays} days that have not been analyzed yet`}
+                  className="btn btn-secondary btn-sm flex-1 sm:flex-none"
+                >
+                  {analyzing ? 'Analyzing…' : `Analyze last ${syncDays} days`}
+                </button>
+                <button
+                  onClick={() => handleBatchAnalyze(true)}
+                  disabled={analyzing}
+                  title="Re-analyze every synced thread, including ones older than your sync window"
+                  className="btn btn-secondary btn-sm flex-1 sm:flex-none"
+                >
+                  Analyze all time
                 </button>
                 <button onClick={() => navigate('/emails/dashboard')} className="btn btn-secondary btn-sm flex-1 sm:flex-none">
                   Dashboard
@@ -299,7 +355,7 @@ function LoadingSpinner() {
 
 function MailIcon() {
   return (
-    <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+    <svg width="16" height="16" fill="none" stroke="#2F55D4" strokeWidth="2" viewBox="0 0 24 24">
       <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
       <polyline points="22,6 12,13 2,6" />
     </svg>

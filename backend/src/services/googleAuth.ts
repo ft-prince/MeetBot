@@ -13,6 +13,7 @@ export interface UserRow {
   refreshToken?: string;
   tokenExpiry?: Date;
   autoJoinMinutes: number;
+  isAdmin: boolean;
 }
 
 export function createOAuth2Client() {
@@ -119,5 +120,6 @@ function rowToUser(row: Record<string, unknown>): UserRow {
     refreshToken: row.refresh_token as string | undefined,
     tokenExpiry: row.token_expiry as Date | undefined,
     autoJoinMinutes: (row.auto_join_minutes as number) ?? 2,
+    isAdmin: row.is_admin === true,
   };
 }

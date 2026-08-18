@@ -1,4 +1,4 @@
-# NoteAI
+# MeetMaster
 
 AI-powered meeting recorder for Google Meet. A Playwright-controlled bot joins your meeting, transcribes every speaker in real time, detects when someone shares their screen, and runs a multi-stage AI pipeline (summary, action items, key questions, chapters, speaker insights) once the call ends — all visible in a secure per-user dashboard with scheduling, search, filtering, and CSV/JSON export.
 
@@ -59,7 +59,7 @@ The **panel WebSocket connects directly from the browser to the backend on port 
 
 ### Live recording
 - **Google Sign-In** — OAuth 2.0; every user only sees their own data
-- **Live Bot Recording** — Playwright-controlled Chrome joins Google Meet as "NoteAI Recorder"
+- **Live Bot Recording** — Playwright-controlled Chrome joins Google Meet as "MeetMaster Recorder"
 - **Real-time Transcription** — per-speaker audio routed through Deepgram (`nova-2`)
 - **Robust Speaker Identification** — SSRC matching + DOM "currently speaking" observer + 3-confirmation co-occurrence cache. No more swapped names from index-based fallbacks.
 - **Screen-share Detection** — WebRTC track inspection + DOM presenter scanning; events persisted to `meetings.metadata.screenshareEvents[]`

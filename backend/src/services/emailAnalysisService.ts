@@ -1,7 +1,7 @@
 import Groq from 'groq-sdk';
 import { config } from '../config';
 import { db } from '../db/client';
-import { getThreadEmails } from './emailService';
+import { getSyncDays, getThreadEmails } from './emailService';
 import type { Email } from './emailService';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -288,14 +288,45 @@ function emitProgress(userId: string, progress: AnalysisProgress): void {
 
 // ─── Batch analyze (after sync) ─────────────────────────────────────────────
 
-export async function analyzeUnanalyzedThreads(userId: string, limit = 20): Promise<number> {
+export interface BatchAnalysisOptions {
+  limit?: number;
+  /** Only analyze threads active within this many days. Defaults to the user's sync window. */
+  withinDays?: number;
+  /** Escape hatch for an explicit user-requested re-analysis — ignores the window. */
+  allTime?: boolean;
+}
+
+/**
+ * Analyze recently-active threads that have no analysis yet.
+ *
+ * The window matters: without it every synced thread eventually gets sent to the
+ * LLM, because each scheduled run picks up the next `limit` unanalyzed rows and
+ * never runs out. Bounding by `last_message_at` means the backlog drains to zero
+ * and stays there, and old mail stays queryable as metadata without costing a
+ * single token. Users can still analyze any individual thread on demand via
+ * `analyzeThread`, or pass `allTime` to sweep everything deliberately.
+ */
+export async function analyzeUnanalyzedThreads(
+  userId: string,
+  opts: BatchAnalysisOptions | number = {},
+): Promise<number> {
+  // ponytail: numeric arg kept working — call sites passed a bare limit.
+  const { limit = 20, withinDays, allTime = false } = typeof opts === 'number' ? { limit: opts } : opts;
+  const windowDays = allTime ? null : (withinDays ?? await getSyncDays(userId));
+
   const res = await db.query(
     `SELECT et.id, et.subject FROM email_threads et
      LEFT JOIN email_analysis ea ON ea.thread_id = et.id
      WHERE et.user_id = $1 AND ea.id IS NULL
+       AND ($3::int IS NULL OR et.last_message_at >= now() - ($3::int * INTERVAL '1 day'))
      ORDER BY et.last_message_at DESC
      LIMIT $2`,
-    [userId, limit],
+    [userId, limit, windowDays],
+  );
+
+  console.log(
+    `[email-ai] user ${userId} — ${res.rows.length} thread(s) queued` +
+    (windowDays === null ? ' (all time, explicit request)' : ` from the last ${windowDays} day(s)`),
   );
 
   const total = res.rows.length;
@@ -356,6 +387,9 @@ export async function analyzeUnanalyzedThreads(userId: string, limit = 20): Prom
 // ─── Follow-up detection ────────────────────────────────────────────────────
 
 export async function detectFollowUps(userId: string, daysThreshold = DEFAULT_FOLLOW_UP_DAYS): Promise<number> {
+  // Bounded by the same window as analysis: a thread that went quiet months ago
+  // is not a follow-up the user wants surfaced today.
+  const windowDays = await getSyncDays(userId);
   const res = await db.query(
     `SELECT et.id, et.subject, e_last.sent_at, e_last.is_sent_by_user
      FROM email_threads et
@@ -365,12 +399,13 @@ export async function detectFollowUps(userId: string, daysThreshold = DEFAULT_FO
      ) e_last ON true
      WHERE et.user_id = $1
        AND e_last.is_sent_by_user = true
-       AND e_last.sent_at < now() - ($2 || ' days')::interval
+       AND e_last.sent_at < now() - ($2::int * INTERVAL '1 day')
+       AND e_last.sent_at >= now() - ($3::int * INTERVAL '1 day')
        AND NOT EXISTS (
          SELECT 1 FROM email_follow_ups ef
          WHERE ef.thread_id = et.id AND ef.status = 'pending'
        )`,
-    [userId, daysThreshold],
+    [userId, daysThreshold, windowDays],
   );
 
   let created = 0;

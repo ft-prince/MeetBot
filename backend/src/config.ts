@@ -13,6 +13,10 @@ export const config = {
     ? process.env.STT_ENGINE
     : 'deepgram') as 'deepgram' | 'whisper' | 'aikosh',
   aikoshSttUrl: process.env.AIKOSH_STT_URL || 'ws://localhost:3003',
+  // Auto-start the local STT sidecar (aikosh/whisper) with the backend. Default
+  // true so a bare `npm run dev` transcribes with no manual step. Set
+  // STT_AUTOSTART=false to manage the sidecar yourself (e.g. to run it on GPU).
+  sttAutostart: process.env.STT_AUTOSTART !== 'false',
   sessionSecret: process.env.SESSION_SECRET || 'noteai-dev-secret',
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
@@ -22,6 +26,19 @@ export const config = {
   groq: {
     apiKey: process.env.GROQ_API_KEY || '',
   },
+  // Run the browser bots headless (no visible window). Default true; set
+  // BOT_HEADLESS=false to watch the bot's Chrome window for debugging.
+  botHeadless: process.env.BOT_HEADLESS !== 'false',
+  // Stuck-bot health-check interval (minutes). NOT a meeting-length cap: when
+  // the timer fires the backend probes the bot (page alive, still on the meeting
+  // URL, responsive) and RE-ARMS the timer if it's healthy — a genuinely long
+  // meeting is never cut off. Only a wedged bot (dead page, navigated away,
+  // unresponsive Chrome) is force-exited. Default 180 min; 0 disables the check.
+  botMaxDurationMin: parseInt(process.env.BOT_MAX_DURATION_MIN || '180', 10),
+  // How long the bot must be CONTINUOUSLY alone (with positive evidence — an
+  // explicit "you're the only one here" banner or a participant-count badge of
+  // 1) before it leaves. Silence is never used as an exit signal. Default 10 min.
+  botAloneExitMin: parseFloat(process.env.BOT_ALONE_EXIT_MIN || '10'),
   // Optional: path to a Chrome user-data-dir with a Google account already signed in.
   botChromeProfileDir: process.env.BOT_CHROME_PROFILE_DIR || '',
   // Bot Google account — auto sign-in before joining each meeting
@@ -64,12 +81,20 @@ export const config = {
     // Self-hosted Vexa API gateway (default `make all` port). Hosted: https://api.cloud.vexa.ai
     apiUrl: process.env.VEXA_API_URL || 'http://localhost:8056',
     apiKey: process.env.VEXA_API_KEY || '',
-    botName: process.env.VEXA_BOT_NAME || 'NoteAI',
+    botName: process.env.VEXA_BOT_NAME || 'MeetMaster',
     // Empty = Vexa auto-detects language. Otherwise an ISO code e.g. 'en', 'es', 'hi'.
     language: process.env.VEXA_LANGUAGE || '',
   },
   // Support ticket email — set SUPPORT_EMAIL to enable email delivery
   supportEmail: process.env.SUPPORT_EMAIL || '',
+  // Public base URL of the dashboard, used in email links (e.g. https://noteai.example.com).
+  appBaseUrl: (process.env.APP_BASE_URL || 'http://localhost:5173').replace(/\/+$/, ''),
+  // Post-meeting results email to the meeting owner (needs SMTP_* configured).
+  // Set MEETING_EMAILS=false to disable.
+  meetingEmails: process.env.MEETING_EMAILS !== 'false',
+  // Send a reminder email if the owner hasn't opened a completed meeting after
+  // this many hours. 0 disables reminders. Default 24.
+  meetingReminderHours: parseFloat(process.env.MEETING_REMINDER_HOURS || '24'),
   smtp: {
     host:  process.env.SMTP_HOST  || '',
     port:  parseInt(process.env.SMTP_PORT  || '587', 10),

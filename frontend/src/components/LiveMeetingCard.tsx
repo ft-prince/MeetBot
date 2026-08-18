@@ -57,11 +57,14 @@ export function LiveMeetingCard({ meeting }: { meeting: LiveMeeting }) {
     <div className="bg-white border-[1.5px] border-gray-200 rounded-xl flex flex-col max-h-[580px] overflow-hidden shadow-card">
       <div className="px-4 py-3 bg-app-bg border-b border-gray-200 flex items-center gap-2">
         <span className={"w-2 h-2 rounded-full flex-shrink-0 " + dotClass} />
-        <span className="text-xs font-bold text-accent flex-1 font-mono">{meeting.id}</span>
-        <span className="text-[11px] text-muted">{meeting.statusText}</span>
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-bold text-ink truncate">{meeting.title || meeting.id}</div>
+          <div className="text-[10px] text-muted font-mono truncate">{meeting.id}</div>
+        </div>
+        <span className="text-[11px] text-muted flex-shrink-0">{meeting.statusText}</span>
       </div>
-      <div className="px-4 py-2 bg-orange-50 border-b border-orange-100 flex items-center gap-2 text-xs min-h-[34px] flex-shrink-0">
-        <span className="font-bold" style={{ color: interimColor?.text || "#F06428" }}>
+      <div className="px-4 py-2 bg-accent-light border-b border-blue-100 flex items-center gap-2 text-xs min-h-[34px] flex-shrink-0">
+        <span className="font-bold" style={{ color: interimColor?.text || "#2F55D4" }}>
           {meeting.interim?.speaker || "—"}
         </span>
         <span className="text-muted italic flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{meeting.interim?.text || ""}</span>
@@ -88,7 +91,7 @@ export function LiveMeetingCard({ meeting }: { meeting: LiveMeeting }) {
       </div>
 
       {meeting.summary && (
-        <div className="px-4 py-3 bg-orange-50 border-t border-orange-100 max-h-44 overflow-y-auto">
+        <div className="px-4 py-3 bg-accent-light border-t border-blue-100 max-h-44 overflow-y-auto">
           <div className="text-[11px] font-bold text-accent mb-1.5">AI Summary</div>
           <div className="text-xs leading-relaxed mb-2">{meeting.summary.text}</div>
           {meeting.summary.insights.length > 0 && (

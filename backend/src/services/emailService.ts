@@ -1,6 +1,7 @@
 import { google, gmail_v1 } from 'googleapis';
 import { db } from '../db/client';
 import { getAuthedClient } from './googleAuth';
+import { capSyncDays, getPlan } from './planService';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,33 @@ export interface Email {
   sentAt: string;
   isSentByUser: boolean;
   hasAttachments: boolean;
+}
+
+// ─── Sync window ────────────────────────────────────────────────────────────
+
+/**
+ * Selectable lookback windows, in days. Anything outside this set is clamped by
+ * `normalizeSyncDays` so a hand-crafted request can't ask Gmail for five years
+ * of mail and then feed all of it to the LLM.
+ */
+export const SYNC_WINDOW_OPTIONS = [10, 15, 30] as const;
+export const DEFAULT_SYNC_DAYS = 30;
+
+export function normalizeSyncDays(value: unknown): number {
+  const n = typeof value === 'number' ? value : parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(n)) return DEFAULT_SYNC_DAYS;
+  // Snap to the nearest allowed option rather than rejecting — callers get a
+  // predictable window instead of an error they have to handle.
+  return SYNC_WINDOW_OPTIONS.reduce((best, opt) =>
+    Math.abs(opt - n) < Math.abs(best - n) ? opt : best,
+  DEFAULT_SYNC_DAYS as number);
+}
+
+/** The window this user last synced with, falling back to the default. */
+export async function getSyncDays(userId: string): Promise<number> {
+  const res = await db.query('SELECT sync_days FROM email_sync_state WHERE user_id = $1', [userId]);
+  const stored = res.rows[0]?.sync_days;
+  return stored == null ? DEFAULT_SYNC_DAYS : normalizeSyncDays(stored);
 }
 
 // ─── Gmail helpers ──────────────────────────────────────────────────────────
@@ -129,25 +157,33 @@ function parseGmailMessage(msg: gmail_v1.Schema$Message): ParsedEmail {
 
 // ─── Sync ───────────────────────────────────────────────────────────────────
 
-export async function syncEmails(userId: string): Promise<SyncResult> {
+export async function syncEmails(userId: string, opts: { days?: number } = {}): Promise<SyncResult> {
   const auth = await getAuthedClient(userId);
   const gmail = getGmail(auth);
+
+  // An explicit `days` wins and becomes the user's new stored preference;
+  // otherwise reuse whatever they synced with last time.
+  // The plan caps the window, so a stored preference from a lapsed paid plan
+  // can't keep pulling a wider mailbox than the current plan allows.
+  const requested = opts.days == null ? await getSyncDays(userId) : normalizeSyncDays(opts.days);
+  const syncDays = capSyncDays(requested, await getPlan(userId));
 
   const userRow = await db.query('SELECT email FROM users WHERE id = $1', [userId]);
   const userEmail = userRow.rows[0]?.email ?? '';
 
   await db.query(
-    `INSERT INTO email_sync_state (user_id, sync_status, last_sync_at)
-     VALUES ($1, 'syncing', now())
-     ON CONFLICT (user_id) DO UPDATE SET sync_status = 'syncing'`,
-    [userId],
+    `INSERT INTO email_sync_state (user_id, sync_status, last_sync_at, sync_days)
+     VALUES ($1, 'syncing', now(), $2)
+     ON CONFLICT (user_id) DO UPDATE SET sync_status = 'syncing', sync_days = EXCLUDED.sync_days`,
+    [userId, syncDays],
   );
 
   const result: SyncResult = { threadsProcessed: 0, messagesProcessed: 0, newThreads: 0, updatedThreads: 0 };
 
   try {
-    const thirtyDaysAgo = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
-    const query = `after:${thirtyDaysAgo}`;
+    const windowStart = Math.floor((Date.now() - syncDays * 24 * 60 * 60 * 1000) / 1000);
+    const query = `after:${windowStart}`;
+    console.log(`[email-sync] user ${userId} — fetching last ${syncDays} day(s)`);
 
     let pageToken: string | undefined;
     const allThreadIds: string[] = [];
@@ -333,6 +369,8 @@ export async function getSyncState(userId: string) {
     totalSynced: r.total_synced,
     syncStatus: r.sync_status,
     errorMessage: r.error_message,
+    syncDays: r.sync_days ?? DEFAULT_SYNC_DAYS,
+    syncDayOptions: SYNC_WINDOW_OPTIONS,
   };
 }
 

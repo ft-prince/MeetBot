@@ -3,6 +3,9 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import { config } from '../config'
+import { diag } from '../services/diag'
+import { launchPersistentContextResilient } from './browserLaunch'
+import { captureJoinDebug } from './botDebug'
 
 export interface TeamsBotOptions {
   meetingUrl: string
@@ -30,7 +33,6 @@ const CHROME_ARGS = [
   '--disable-features=IsolateOrigins,site-per-process',
   '--disable-site-isolation-trials',
   '--no-default-browser-check',
-  '--disable-extensions-except=',
 ]
 
 export class TeamsBot {
@@ -42,7 +44,7 @@ export class TeamsBot {
   private blockReason: string | null = null
 
   async start(opts: TeamsBotOptions): Promise<void> {
-    const { meetingUrl, displayName = 'NoteAI Recorder' } = opts
+    const { meetingUrl, displayName = 'MeetMaster Recorder' } = opts
 
     const webClientUrl = toTeamsWebClientUrl(meetingUrl)
 
@@ -56,13 +58,13 @@ export class TeamsBot {
       // Pre-signed-in Microsoft session — required for org-restricted meetings.
       // Run `npx tsx scripts/teams-login.ts` once to create the profile.
       console.log(`[teams-bot] Using saved Chrome profile: ${profileDir}`)
-      this.context = await chromium.launchPersistentContext(profileDir, {
+      this.context = await launchPersistentContextResilient(profileDir, {
         channel: 'chrome',
-        headless: false,
+        headless: config.botHeadless,
         args: CHROME_ARGS,
         permissions: ['microphone', 'camera'],
         ignoreDefaultArgs: ['--enable-automation'],
-      })
+      }, 'teams-bot')
       this.persistentContext = true
     } else {
       // ── Guest mode ──────────────────────────────────────────────────────
@@ -71,7 +73,7 @@ export class TeamsBot {
       console.log('[teams-bot] Run `npx tsx scripts/teams-login.ts` once to fix this.')
       this.browser = await chromium.launch({
         channel: 'chrome',
-        headless: false,
+        headless: config.botHeadless,
         args: CHROME_ARGS,
         ignoreDefaultArgs: ['--enable-automation'],
       })
@@ -80,13 +82,19 @@ export class TeamsBot {
       })
     }
 
+    // Reuse a tab the persistent context already has open. Closing the LAST tab
+    // of a persistent Chrome context (channel: 'chrome') shuts the browser down,
+    // so the following newPage() fails with
+    // "Protocol error (Target.createTarget): Failed to open a new tab".
     if (this.persistentContext && this.context) {
-      for (const p of this.context.pages()) {
+      const existingPages = this.context.pages()
+      this.page = existingPages[0] ?? await this.context.newPage()
+      for (const p of existingPages.slice(1)) {
         try { await p.close() } catch {}
       }
+    } else {
+      this.page = await this.context.newPage()
     }
-
-    this.page = await this.context.newPage()
 
     // tsx/esbuild wraps named functions with a __name() helper. When Playwright
     // serializes our inline page functions into the page that helper is missing
@@ -108,7 +116,14 @@ export class TeamsBot {
 
     this.page.on('crash', () => console.error('[teams-bot] Page crashed'))
     this.page.on('console', msg => {
-      if (msg.text().startsWith('[NoteAI]')) console.log('[teams-page]', msg.text())
+      const t = msg.text()
+      if (!t.startsWith('[NoteAI]')) return
+      console.log('[teams-page]', t)
+      // Persist capture diagnostics to bot-diag.log so a silent session can be
+      // explained after the fact (no audio delivered vs. broken capture path).
+      if (/\bDIAG\b|first frame|capturing via|audio flowing|sink failed|AudioWorklet/.test(t)) {
+        diag('PAGE ' + t.replace(/^\[NoteAI\]\s*/, ''))
+      }
     })
 
     await this.page.exposeFunction('noteAISendTrackAudio', (samples: number[], trackId: string) => {
@@ -273,6 +288,11 @@ export class TeamsBot {
       await page.waitForTimeout(500).catch(() => {})
     }
     console.warn('[teams-bot] Pre-join UI not detected after 30s — proceeding anyway')
+    // None of the pre-join signals matched. Capture the page and check for a
+    // block/sign-in wall now, instead of discovering it minutes later when the
+    // meeting-UI wait times out.
+    await captureJoinDebug(page, 'teams-prejoin-timeout', 'teams-bot')
+    await this.checkBlocked(page)
   }
 
   private async trySetName(page: Page, name: string): Promise<void> {
@@ -390,6 +410,7 @@ export class TeamsBot {
       await page.waitForTimeout(500).catch(() => {})
     }
     console.warn('[teams-bot] Join button not found after 30s')
+    await captureJoinDebug(page, 'teams-joinbtn-timeout', 'teams-bot')
   }
 
   private async hasInMeetingSignal(page: Page): Promise<boolean> {
@@ -403,7 +424,12 @@ export class TeamsBot {
   }
 
   private async waitForMeetingUI(page: Page): Promise<void> {
-    for (let i = 0; i < 300; i++) {
+    // Base wait 5 min. While Teams explicitly says we're in the lobby (or the
+    // meeting hasn't started), keep waiting up to 20 min — a host admitting the
+    // bot late is normal and must not be reported as "blocked".
+    const BASE_S = 300
+    const EXTENDED_S = 1200
+    for (let i = 0; i < EXTENDED_S; i++) {
       if (this.ended) return
 
       if (i >= 5 && await this.checkBlocked(page)) return
@@ -415,12 +441,22 @@ export class TeamsBot {
         }
       } catch {}
 
+      let holding = false
+      if (i >= BASE_S || i % 15 === 0) {
+        holding = await page.evaluate(() => {
+          const text = (document.body.innerText || '').slice(0, 4000)
+          return /someone will let you in|waiting (in the lobby|for the (host|organizer))|when the meeting starts, we'?ll let people know|hasn'?t started/i.test(text)
+        }).catch(() => false)
+        if (i >= BASE_S && !holding) break
+      }
+
       if (i > 0 && i % 30 === 0) {
-        console.log(`[teams-bot] Waiting for meeting UI (${i}s) — may be in lobby, please admit the bot`)
+        console.log(`[teams-bot] Waiting for meeting UI (${i}s)${holding ? ' — in lobby, please admit the bot' : ''}`)
       }
       await page.waitForTimeout(1000).catch(() => {})
     }
-    console.warn('[teams-bot] Meeting UI not detected after 5 min')
+    console.warn('[teams-bot] Meeting UI not detected — giving up')
+    await captureJoinDebug(page, 'teams-meetingui-timeout', 'teams-bot')
     this.ended = true
   }
 
@@ -470,11 +506,7 @@ export class TeamsBot {
       return [...found]
     })
 
-    return names.filter(n =>
-      !/^note/i.test(n) && !/recorder/i.test(n) &&
-      !TEAMS_NAME_STOPWORDS.has(n.toLowerCase()) &&
-      n.length >= 2 && n.length <= 50
-    )
+    return filterTeamsParticipantNames(names)
   }
 
   private pollParticipantNames(opts: TeamsBotOptions): void {
@@ -522,25 +554,31 @@ export class TeamsBot {
 
   private watchForAlone(onEnded?: () => void): void {
     const page = this.page!
-    const ALONE_MS = 2 * 60 * 1000
+    const aloneMin = Math.max(1, config.botAloneExitMin)
+    const ALONE_MS = aloneMin * 60 * 1000
     const CHECK_MS = 30_000
     const GRACE_MS = 60_000
     let aloneAt: number | null = null
+    // An empty scrape is ambiguous: "everyone left" and "the participant
+    // selectors broke" look identical. Only trust 0-others as "alone" after the
+    // scraper has POSITIVELY seen another participant at least once this
+    // meeting — a scraping failure must never abandon an active call.
+    let everSawOthers = false
     const joinedAt = Date.now()
 
     const iv = setInterval(async () => {
       if (this.ended) { clearInterval(iv); return }
       if (Date.now() - joinedAt < GRACE_MS) return
       try {
-        // Only treat as alone when BOTH the roster is empty AND no in-meeting
-        // signal is missing — guards against a selector break causing a
-        // premature leave (the bot must positively confirm it is still in-call).
+        // Only treat as alone when the bot positively confirms it is still
+        // in-call AND the previously-working roster scrape now reads empty.
         const stillInMeeting = await this.hasInMeetingSignal(page)
         const others = (await this.scrapeParticipantNames(page)).length
-        if (stillInMeeting && others === 0) {
-          if (!aloneAt) { aloneAt = Date.now(); console.log('[teams-bot] Alone — will leave in 2 min') }
+        if (others > 0) everSawOthers = true
+        if (stillInMeeting && others === 0 && everSawOthers) {
+          if (!aloneAt) { aloneAt = Date.now(); console.log(`[teams-bot] Alone — will leave in ${aloneMin} min if no one returns`) }
           else if (Date.now() - aloneAt >= ALONE_MS) {
-            console.log('[teams-bot] Alone 2 min — leaving'); clearInterval(iv)
+            console.log(`[teams-bot] Alone ${aloneMin} min — leaving`); clearInterval(iv)
             if (!this.ended) { this.ended = true; onEnded?.(); await this.stop() }
           }
         } else {
@@ -549,6 +587,23 @@ export class TeamsBot {
         }
       } catch {}
     }, CHECK_MS)
+  }
+
+  // Health probe for the botManager duration backstop: still on a Teams page and
+  // Chrome responds. While true the backstop re-arms instead of force-exiting.
+  async isMeetingHealthy(): Promise<boolean> {
+    const page = this.page
+    if (this.ended || !page) return false
+    try {
+      if (!/teams\.(microsoft|live)\.com/i.test(page.url())) return false
+      await Promise.race([
+        page.evaluate(() => document.readyState),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('page unresponsive')), 10_000)),
+      ])
+      return true
+    } catch {
+      return false
+    }
   }
 
   // ── End detection ─────────────────────────────────────────────────────────
@@ -604,6 +659,25 @@ const TEAMS_NAME_STOPWORDS = new Set([
   'in this meeting', 'people', 'participants', 'muted', 'unmuted',
   'connecting', 'reconnecting', 'waiting in lobby', 'in the lobby',
 ])
+
+// Roster/tile strings that describe a shared screen rather than a participant.
+const TEAMS_PSEUDO_NAME_RE =
+  /(presentation|is presenting|presenting now|is sharing|screen ?share|screenshar|shared screen|'s screen|\bscreen\b\s*$|^content$)/i
+
+/**
+ * Keep only real OTHER participants from a raw Teams roster scrape. Drops the
+ * bot itself, UI strings, and screen-share pseudo-entries — those are roster
+ * rows but not people, so counting them breaks alone-detection and can bind a
+ * transcript segment to a non-person. Exported so it can be unit-tested.
+ */
+export function filterTeamsParticipantNames(names: string[]): string[] {
+  return names.filter(n =>
+    !/^note/i.test(n) && !/recorder/i.test(n) &&
+    !TEAMS_NAME_STOPWORDS.has(n.toLowerCase()) &&
+    !TEAMS_PSEUDO_NAME_RE.test(n) &&
+    n.length >= 2 && n.length <= 50
+  )
+}
 
 const NAME_INPUT_SELECTORS = [
   '[data-tid="prejoin-display-name-input"]',

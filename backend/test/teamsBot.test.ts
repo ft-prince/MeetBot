@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { toTeamsWebClientUrl } from '../src/bot/teamsBot'
+import { filterTeamsParticipantNames, toTeamsWebClientUrl } from '../src/bot/teamsBot'
+import { extractMeetingId } from '../src/bot/botManager'
 
 test('teams.live.com personal links are returned unchanged', () => {
   // Arrange
@@ -61,6 +62,43 @@ test('malformed input is returned unchanged instead of throwing', () => {
 
   // Assert
   assert.equal(result, garbage)
+})
+
+test('roster filter keeps real people and drops the bot plus UI strings', () => {
+  // Arrange
+  const raw = ['Prince Saiyad', 'NoteAI Recorder', 'People', 'In this meeting', 'Ana Ruiz']
+
+  // Act
+  const result = filterTeamsParticipantNames(raw)
+
+  // Assert
+  assert.deepEqual(result, ['Prince Saiyad', 'Ana Ruiz'])
+})
+
+test('roster filter drops screen-share pseudo-entries', () => {
+  // Arrange — a share adds rows that are not participants; counting them would
+  // hide "everyone left" and could bind a transcript segment to a non-person.
+  const raw = ["Prince Saiyad's screen", 'Prince Saiyad is presenting', 'Content', 'Screen share', 'Ana Ruiz']
+
+  // Act
+  const result = filterTeamsParticipantNames(raw)
+
+  // Assert
+  assert.deepEqual(result, ['Ana Ruiz'])
+})
+
+test('an unrecognized Teams link yields a stable meeting id across launches', () => {
+  // Arrange
+  const url = 'https://teams.microsoft.com/l/meetup-join/some-new-link-shape'
+
+  // Act
+  const first = extractMeetingId(url)
+  const second = extractMeetingId(url)
+
+  // Assert — a timestamped id would mint a new one per launch, so the
+  // duplicate-bot guard and stop()/exit() by meeting id would both miss.
+  assert.equal(first, second)
+  assert.match(first, /^teams-[0-9a-f]{16}$/)
 })
 
 test('non-Teams URLs are passed through untouched', () => {

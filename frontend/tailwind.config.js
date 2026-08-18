@@ -4,20 +4,38 @@ export default {
   theme: {
     extend: {
       colors: {
-        'app-bg': '#F4F6F9',
+        'app-bg': '#F6F8FB',
         accent: {
-          DEFAULT: '#F06428',
-          hover: '#D94E1C',
-          light: '#FEF3EE',
+          DEFAULT: '#2F55D4',
+          hover: '#2444B0',
+          light: '#EEF2FD',
         },
-        ink: '#111827',
-        muted: '#6B7280',
-        success: '#059669',
-        warning: '#D97706',
-        danger: '#DC2626',
+        ink: '#0F172A',
+        muted: '#64748B',
+        success: '#047857',
+        warning: '#B45309',
+        danger: '#B91C1C',
+      },
+      // Global radius scale override — squares off every existing `rounded-*`
+      // class at once so the app reads corporate rather than consumer. `full`
+      // is untouched so pills and avatars stay circular.
+      borderRadius: {
+        none: '0',
+        sm: '2px',
+        DEFAULT: '3px',
+        md: '4px',
+        lg: '5px',
+        xl: '6px',
+        '2xl': '8px',
+        '3xl': '10px',
+        full: '9999px',
+        // Marketing site only — three steps, nothing between them.
+        btn: '8px',
+        card: '12px',
+        frame: '16px',
       },
       fontFamily: {
-        sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Inter', 'sans-serif'],
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       boxShadow: {

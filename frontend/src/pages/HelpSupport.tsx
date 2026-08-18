@@ -1,9 +1,13 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Topbar } from '../components/Topbar'
+import { useAuth } from '../context/AuthContext'
 import { api } from '../lib/api'
 
 const ISSUE_OPTIONS = [
   { value: '',                       label: 'Select an issue type…' },
+  { value: 'upgrade-request',        label: 'Upgrade my plan' },
+  { value: 'billing',                label: 'Billing question' },
   { value: 'bot-unable-to-join',     label: 'Bot unable to join meeting' },
   { value: 'bot-joined-no-record',   label: 'Bot joined but didn\'t record' },
   { value: 'auto-join-failed',       label: 'Auto-join didn\'t work' },
@@ -15,8 +19,22 @@ const ISSUE_OPTIONS = [
 type State = 'idle' | 'sending' | 'sent' | 'error'
 
 export function HelpSupport() {
-  const [issueType, setIssueType] = useState('')
-  const [message, setMessage]     = useState('')
+  // Pricing links here as /help?issue=upgrade-request&plan=pro, so the form
+  // arrives filled in and the user only has to press Send.
+  const [params] = useSearchParams()
+  const { user } = useAuth()
+  const requestedPlan = params.get('plan')
+  const presetIssue = ISSUE_OPTIONS.some(o => o.value && o.value === params.get('issue'))
+    ? params.get('issue')!
+    : ''
+
+  const [issueType, setIssueType] = useState(presetIssue)
+  const [message, setMessage]     = useState(
+    presetIssue === 'upgrade-request' && requestedPlan
+      ? `I'd like to upgrade to the ${requestedPlan} plan.` +
+        (user?.usage ? ` I'm currently on ${user.usage.planName}.` : '')
+      : '',
+  )
   const [state, setState]         = useState<State>('idle')
   const [errorMsg, setErrorMsg]   = useState('')
 
@@ -46,7 +64,7 @@ export function HelpSupport() {
           {/* Header card */}
           <div className="card p-5 sm:p-6 flex items-start gap-4">
             <div className="w-10 h-10 rounded-xl bg-accent-light flex items-center justify-center flex-shrink-0 mt-0.5">
-              <svg width="20" height="20" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+              <svg width="20" height="20" fill="none" stroke="#2F55D4" strokeWidth="2" viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="10" />
                 <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
                 <line x1="12" y1="17" x2="12.01" y2="17" strokeWidth="2.5" strokeLinecap="round" />

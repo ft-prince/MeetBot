@@ -98,7 +98,7 @@ export function EmailDashboard() {
         {brief && (
           <div className="card p-4 sm:p-5 mb-4 sm:mb-6 bg-gradient-to-r from-accent/5 to-amber-50">
             <div className="flex items-center gap-2 mb-3">
-              <svg width="18" height="18" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+              <svg width="18" height="18" fill="none" stroke="#2F55D4" strokeWidth="2" viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
               </svg>
               <span className="text-sm font-bold">Daily Brief — {brief.date}</span>
@@ -206,7 +206,7 @@ function StatCard({ label, value, valueClass = '' }: { label: string; value: num
 function PriorityDot({ priority }: { priority: string }) {
   const colors: Record<string, string> = {
     critical: 'bg-red-500',
-    high: 'bg-orange-500',
+    high: 'bg-amber-500',
     medium: 'bg-yellow-500',
     low: 'bg-gray-400',
   }

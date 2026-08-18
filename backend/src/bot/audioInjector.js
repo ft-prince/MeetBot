@@ -10,14 +10,104 @@
 
   let audioCtx = null
   let audioInitPromise = null   // ensures initAudio() is only called once
+  let workletReady = false      // true once the AudioWorklet module loads (may be CSP-blocked)
   const connectedTracks = new Set()
   const trackMeta = new Map()  // trackId → { analyser, dataArray, index }
   let trackIndex = 0
   const speakingNow = new Map()
   const SPEAK_THRESHOLD = 8   // 0-255 average frequency energy
+  let _internalCMSS = false   // true while WE call createMediaStreamSource (skip self-hook)
 
   // Exposed to page.evaluate so pollParticipantNames can resolve track→name
   window.__noteAITrackList = []   // [{trackId, index}]
+
+  // ── Capture path C: hook Meet's Web Audio rendering ───────────────────────
+  // On real Google Meet the raw remote track reads silent (see addAudioTrack /
+  // captureViaTrackProcessor notes), and if Meet renders audio through its OWN
+  // AudioContext (createMediaStreamSource → destination) rather than <audio>
+  // elements, the element tap finds nothing either. So we intercept every
+  // MediaStreamSource Meet builds and tee it through a ScriptProcessor on Meet's
+  // OWN context — reading the exact post-render samples Meet is about to play.
+  // ScriptProcessor needs no module fetch, so Meet's CSP can't block it. Each
+  // intercepted source gets its own trackId ('wasrc-N') → its own Deepgram stream
+  // (no chunk interleaving). Silent sources simply produce no transcripts.
+  let waSrcCount = 0
+
+  // Every AudioContext our capture depends on (our own + each of Meet's that we
+  // tee through). Chrome can flip a context to 'suspended' mid-meeting (e.g.
+  // after long inactivity in an automated tab), which silently freezes every
+  // worklet/ScriptProcessor on it — capture stops and never comes back. A
+  // periodic resume makes the pipeline self-heal so transcription resumes as
+  // soon as speech does.
+  const watchedCtxs = new Set()
+  setInterval(() => {
+    for (const c of watchedCtxs) {
+      try {
+        if (c.state === 'suspended') {
+          c.resume().catch(() => {})
+          console.log('[NoteAI] resumed suspended AudioContext')
+        }
+      } catch {}
+    }
+  }, 5000)
+
+  function tapWebAudioSource (ctx, node) {
+    try {
+      watchedCtxs.add(ctx)
+      const id = 'wasrc-' + (waSrcCount++)
+      const sp = ctx.createScriptProcessor(4096, 1, 1)
+      const step = ctx.sampleRate / SAMPLE_RATE
+      let native = [], readPos = 0, out = []
+      let firstChunk = false, dbgSum = 0, dbgN = 0, dbgLast = Date.now()
+      sp.onaudioprocess = (e) => {
+        const ch = e.inputBuffer.getChannelData(0)
+        for (let i = 0; i < ch.length; i++) { native.push(ch[i]); dbgSum += ch[i] * ch[i]; dbgN++ }
+        while (readPos + 1 < native.length) {
+          const idx = readPos | 0, frac = readPos - idx
+          const s = native[idx] * (1 - frac) + native[idx + 1] * frac
+          const v = s < -1 ? -1 : s > 1 ? 1 : s
+          out.push(v < 0 ? v * 32768 : v * 32767)
+          readPos += step
+          if (out.length >= CHUNK_SAMPLES) {
+            if (!firstChunk) { firstChunk = true; console.log('[NoteAI] audio flowing for ' + id + ' (web-audio tap)') }
+            if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(out, id)
+            out = []
+          }
+        }
+        const consumed = readPos | 0
+        if (consumed > 0) { native.splice(0, consumed); readPos -= consumed }
+        const now = Date.now()
+        if (now - dbgLast > 3000) {
+          console.log('[NoteAI] DIAG ' + id + ' webAudioRMS=' + Math.sqrt(dbgSum / Math.max(dbgN, 1)).toFixed(4))
+          dbgSum = 0; dbgN = 0; dbgLast = now
+        }
+      }
+      // ScriptProcessor only fires while connected to a destination; route through
+      // zero gain so it runs without echoing Meet's audio back out.
+      const zero = ctx.createGain(); zero.gain.value = 0
+      node.connect(sp); sp.connect(zero); zero.connect(ctx.destination)
+      console.log('[NoteAI] hooked Web Audio MediaStreamSource → ' + id)
+    } catch (e) { console.log('[NoteAI] web-audio tap failed -', (e && e.message)) }
+  }
+
+  ;(function patchWebAudio () {
+    for (const C of [window.AudioContext, window.webkitAudioContext]) {
+      if (!C || !C.prototype) continue
+      const orig = C.prototype.createMediaStreamSource
+      if (!orig || orig.__noteAIWrapped) continue
+      const wrapped = function (stream) {
+        const node = orig.call(this, stream)
+        try {
+          if (!_internalCMSS && stream && stream.getAudioTracks && stream.getAudioTracks().length > 0) {
+            tapWebAudioSource(this, node)
+          }
+        } catch {}
+        return node
+      }
+      wrapped.__noteAIWrapped = true
+      C.prototype.createMediaStreamSource = wrapped
+    }
+  })()
 
   const meetingId = (function () {
     const m = location.pathname.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/)
@@ -27,36 +117,154 @@
   // ── Audio pipeline init ───────────────────────────────────────
 
   async function initAudio () {
-    audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE })
+    // IMPORTANT: do NOT force `sampleRate` here. A non-default AudioContext rate
+    // makes a MediaStreamAudioSourceNode built from a *remote* WebRTC track emit
+    // pure silence in Chrome (confirmed: track live+unmuted, sink decoding with
+    // readyState 4, yet analyserRMS=0). We run the context at its native rate
+    // (usually 48k) and downsample to 16k inside the worklet instead.
+    audioCtx = new AudioContext()
+    watchedCtxs.add(audioCtx)   // keep it running for the life of the meeting
+    // A fresh AudioContext can start 'suspended' in an automated tab with no user
+    // gesture, which silently stalls the analyser/worklet. Resume it (and again on
+    // the first track) so remote audio actually flows.
+    try { if (audioCtx.state === 'suspended') await audioCtx.resume() } catch {}
 
+    // Worklet downsamples from the context's native `sampleRate` to TARGET_RATE
+    // (16k) via linear interpolation, then emits ${CHUNK_SAMPLES}-sample (200ms)
+    // Int16 chunks — the rate the STT sidecars/Deepgram expect.
     const workletCode = `
+      const TARGET_RATE = ${SAMPLE_RATE}
+      const CHUNK = ${CHUNK_SAMPLES}
       class PCMSender extends AudioWorkletProcessor {
-        constructor () { super(); this._buf = []; this._n = 0 }
+        constructor () {
+          super()
+          this._native = []          // queued native-rate float samples
+          this._readPos = 0          // fractional read cursor into _native
+          this._out = []             // resampled int16 @ TARGET_RATE
+          this._step = sampleRate / TARGET_RATE  // native samples per output sample
+        }
         process (inputs) {
-          const ch = inputs[0]?.[0]; if (!ch) return true
-          const i16 = new Int16Array(ch.length)
-          for (let i = 0; i < ch.length; i++) {
-            const v = Math.max(-1, Math.min(1, ch[i]))
-            i16[i] = v < 0 ? v * 32768 : v * 32767
+          const ch = inputs[0] && inputs[0][0]
+          if (!ch) return true
+          for (let i = 0; i < ch.length; i++) this._native.push(ch[i])
+          while (this._readPos + 1 < this._native.length) {
+            const idx = this._readPos | 0
+            const frac = this._readPos - idx
+            const s = this._native[idx] * (1 - frac) + this._native[idx + 1] * frac
+            const v = s < -1 ? -1 : s > 1 ? 1 : s
+            this._out.push(v < 0 ? v * 32768 : v * 32767)
+            this._readPos += this._step
+            if (this._out.length >= CHUNK) {
+              this.port.postMessage({ samples: this._out, trackId: this._trackId })
+              this._out = []
+            }
           }
-          this._buf.push(i16); this._n += i16.length
-          if (this._n >= ${CHUNK_SAMPLES}) {
-            const out = new Int16Array(this._n)
-            let off = 0
-            for (const b of this._buf) { out.set(b, off); off += b.length }
-            this.port.postMessage({ samples: Array.from(out), trackId: this._trackId })
-            this._buf = []; this._n = 0
-          }
+          const consumed = this._readPos | 0
+          if (consumed > 0) { this._native.splice(0, consumed); this._readPos -= consumed }
           return true
         }
       }
       registerProcessor('pcm-sender', PCMSender)
     `
-    const blob = new Blob([workletCode], { type: 'application/javascript' })
-    const url  = URL.createObjectURL(blob)
-    await audioCtx.audioWorklet.addModule(url)
-    URL.revokeObjectURL(url)
-    console.log('[NoteAI] audio context ready')
+    // AudioWorklet needs to fetch a module URL. Google Meet's Content-Security-Policy
+    // can block a blob: URL, which would throw here and silently kill audio capture
+    // (the track still gets named via the index fallback). Catch it and fall back
+    // to a ScriptProcessorNode, which needs no module fetch.
+    try {
+      const blob = new Blob([workletCode], { type: 'application/javascript' })
+      const url  = URL.createObjectURL(blob)
+      await audioCtx.audioWorklet.addModule(url)
+      URL.revokeObjectURL(url)
+      workletReady = true
+      console.log('[NoteAI] audio context ready (AudioWorklet)')
+    } catch (e) {
+      workletReady = false
+      console.log('[NoteAI] AudioWorklet unavailable (' + (e && e.message) + ') — using ScriptProcessor fallback')
+    }
+  }
+
+  // Read decoded audio frames directly off a MediaStreamTrack via WebCodecs,
+  // downsample to 16k, and emit 200ms Int16 chunks. Bypasses the WebAudio graph,
+  // which delivers silence for Meet's remote tracks in this Chrome build.
+  function captureViaTrackProcessor (track, trackId, emit) {
+    // A single reader.read() failure must NOT permanently kill this track's
+    // capture — that turns a transient glitch (long silence, renderer hiccup)
+    // into "transcription never resumes for this participant". While the track
+    // is still live we re-attach a fresh processor and keep going.
+    let retries = 0
+    const MAX_RETRIES = 30
+    const startReader = () => {
+    let proc
+    try { proc = new MediaStreamTrackProcessor({ track }) }
+    catch (e) { console.log('[NoteAI] TrackProcessor init failed for', trackId.slice(0, 8), '-', (e && e.message)); return }
+    const reader = proc.readable.getReader()
+    const TARGET = SAMPLE_RATE
+    let native = [], readPos = 0, out = []
+    let frames = 0, dbgSum = 0, dbgN = 0, dbgLast = Date.now()
+
+    ;(async () => {
+      while (true) {
+        let r
+        try { r = await reader.read() } catch (e) {
+          if (track.readyState === 'live' && retries++ < MAX_RETRIES) {
+            console.log('[NoteAI] TrackProcessor read error for ' + trackId.slice(0, 8) +
+              ' (' + (e && e.message) + ') — re-attaching, attempt ' + retries)
+            setTimeout(startReader, 2000)
+          } else {
+            console.log('[NoteAI] TrackProcessor stopped for ' + trackId.slice(0, 8) +
+              ' (track ' + track.readyState + ', retries ' + retries + ')')
+          }
+          return
+        }
+        if (r.done) break
+        const frame = r.value
+        try {
+          const n = frame.numberOfFrames
+          const rate = frame.sampleRate || 48000
+          const fmt = frame.format || 'f32-planar'
+          let floats
+          if (fmt.indexOf('f32') === 0) {
+            floats = new Float32Array(n)
+            frame.copyTo(floats, { planeIndex: 0 })
+          } else if (fmt.indexOf('s16') === 0) {
+            const i16 = new Int16Array(n)
+            frame.copyTo(i16, { planeIndex: 0 })
+            floats = new Float32Array(n)
+            for (let i = 0; i < n; i++) floats[i] = i16[i] / 32768
+          } else {
+            floats = new Float32Array(n)
+            frame.copyTo(floats, { planeIndex: 0 })
+          }
+          frame.close()
+
+          const step = rate / TARGET
+          for (let i = 0; i < n; i++) { native.push(floats[i]); dbgSum += floats[i] * floats[i]; dbgN++ }
+          while (readPos + 1 < native.length) {
+            const idx = readPos | 0, frac = readPos - idx
+            const s = native[idx] * (1 - frac) + native[idx + 1] * frac
+            const v = s < -1 ? -1 : s > 1 ? 1 : s
+            out.push(v < 0 ? v * 32768 : v * 32767)
+            readPos += step
+            if (out.length >= CHUNK_SAMPLES) { emit(out); out = [] }
+          }
+          const consumed = readPos | 0
+          if (consumed > 0) { native.splice(0, consumed); readPos -= consumed }
+
+          if (++frames === 1) {
+            retries = 0   // healthy again — a later glitch gets a fresh retry budget
+            console.log('[NoteAI] TrackProcessor first frame', trackId.slice(0, 8), 'rate=' + rate, 'fmt=' + fmt, 'ch=' + (frame.numberOfChannels || 1))
+          }
+          const now = Date.now()
+          if (now - dbgLast > 3000) {
+            const rms = Math.sqrt(dbgSum / Math.max(dbgN, 1))
+            console.log('[NoteAI] TrackProcessor ' + trackId.slice(0, 8) + ' rms=' + rms.toFixed(4) + ' (' + frames + ' frames)')
+            dbgSum = 0; dbgN = 0; dbgLast = now
+          }
+        } catch (e) { try { frame.close() } catch (e2) {} }
+      }
+    })()
+    }
+    startReader()
   }
 
   async function addAudioTrack (track, pc) {
@@ -67,31 +275,244 @@
     console.log('[NoteAI] new audio track:', trackId.slice(0, 8), 'index:', myIndex)
     window.__noteAITrackList.push({ trackId, index: myIndex })
 
-    // Singleton init — all concurrent calls share the same promise
-    if (!audioInitPromise) audioInitPromise = initAudio()
-    await audioInitPromise
+    try {
+      // Singleton init — all concurrent calls share the same promise
+      if (!audioInitPromise) audioInitPromise = initAudio()
+      await audioInitPromise
 
-    const source   = audioCtx.createMediaStreamSource(new MediaStream([track]))
+      const stream   = new MediaStream([track])
 
-    // Per-track worklet — sends audio for this one participant
-    const worklet  = new AudioWorkletNode(audioCtx, 'pcm-sender')
-    worklet.port.onmessage = (e) => {
-      if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(e.data.samples, trackId)
+      // CRITICAL: a MediaStreamAudioSourceNode built from a *remote* WebRTC track
+      // emits SILENCE in Chrome unless the track is also consumed by a media
+      // element. Without this the worklet/analyser receive all-zero samples —
+      // audio "flows" to the backend but transcribes to nothing (the exact
+      // "track named, no transcription" symptom). A muted, autoplaying <audio>
+      // sink forces Chrome to decode the track so real samples reach WebAudio.
+      // Muted keeps it from echoing into the bot's own mic / playing aloud.
+      try {
+        // The context may still be suspended when the first track arrives.
+        if (audioCtx.state === 'suspended') { try { await audioCtx.resume() } catch {} }
+        const sink = document.createElement('audio')
+        sink.muted = true
+        sink.autoplay = true
+        sink.setAttribute('playsinline', '')
+        sink.volume = 0
+        sink.srcObject = stream
+        // CRITICAL: the sink element must be IN THE DOM for Chrome to actually
+        // decode a *remote* WebRTC track. A detached `new Audio()` does not
+        // reliably pump samples in a headless/automated tab, so the analyser and
+        // worklet receive all-zero frames → audio "flows" but transcribes to
+        // nothing. Append it hidden and keep a reference so it isn't GC'd.
+        sink.style.display = 'none'
+        document.body.appendChild(sink)
+        const pl = sink.play()
+        if (pl && pl.catch) pl.catch(() => {})
+        ;(window.__noteAISinks = window.__noteAISinks || []).push(sink)  // retain ref so it isn't GC'd
+      } catch (e) {
+        console.log('[NoteAI] audio sink failed for', trackId.slice(0, 8), '-', (e && e.message))
+      }
+
+      _internalCMSS = true
+      const source   = audioCtx.createMediaStreamSource(stream)
+      _internalCMSS = false
+
+      // Per-track analyser — measures audio level for speaking detection
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 512
+      analyser.smoothingTimeConstant = 0.4
+      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+      source.connect(analyser)
+      trackMeta.set(trackId, { analyser, dataArray, index: myIndex, pc })
+
+      // DIAGNOSTIC: report where the signal dies — is the remote track itself
+      // muted/not delivering, or does WebAudio receive zeros despite a live track?
+      // Runs for the LIFE of the track (not just the first 20s): a meeting that
+      // produces no transcripts because the bot is fed silence is exactly the case
+      // we need to keep observing — when transcripts are missing, these lines tell
+      // us whether the remote track is muted at source (trk.muted=true / silence
+      // from the SFU) or the sink stopped decoding. Verbose for the first ~20s,
+      // then throttled to once every ~15s so long sessions stay diagnosable
+      // without flooding the bot log.
+      {
+        let dn = 0
+        const td = new Uint8Array(analyser.fftSize)
+        const iv = setInterval(() => {
+          try {
+            analyser.getByteTimeDomainData(td)
+            let s = 0
+            for (let i = 0; i < td.length; i++) { const v = (td[i] - 128) / 128; s += v * v }
+            const rms = Math.sqrt(s / td.length)
+            // After the initial burst, only emit every ~15s (every 8th 2s tick).
+            dn++
+            if (dn > 10 && dn % 8 !== 0) return
+            const sink = (window.__noteAISinks || []).slice(-1)[0]
+            console.log('[NoteAI] DIAG ' + trackId.slice(0, 8) +
+              ' analyserRMS=' + rms.toFixed(4) +
+              ' ctx=' + audioCtx.state +
+              ' trk.enabled=' + track.enabled +
+              ' trk.muted=' + track.muted +
+              ' trk.state=' + track.readyState +
+              ' sink.paused=' + (sink ? sink.paused : 'n/a') +
+              ' sink.ready=' + (sink ? sink.readyState : 'n/a'))
+            // Stop only once the track is truly gone — nothing more to report.
+            if (track.readyState === 'ended') clearInterval(iv)
+          } catch (e) { clearInterval(iv) }
+        }, 2000)
+      }
+
+      // Confirm-once that audio actually reaches Node for this track — turns a
+      // silent "no transcription" into an observable signal in the bot logs.
+      let firstChunkLogged = false
+      const emit = (samples) => {
+        if (!firstChunkLogged) { firstChunkLogged = true; console.log('[NoteAI] audio flowing for', trackId.slice(0, 8)) }
+        if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(samples, trackId)
+      }
+
+      if (window.MediaStreamTrackProcessor) {
+        // PRIMARY: read decoded audio frames straight off the track via WebCodecs.
+        // This bypasses createMediaStreamSource, which yields pure silence for
+        // Meet's remote tracks in this Chrome (confirmed: track live+unmuted, sink
+        // decoding, yet analyserRMS=0). Reliable for remote SFU audio.
+        console.log('[NoteAI] capturing via MediaStreamTrackProcessor for', trackId.slice(0, 8))
+        captureViaTrackProcessor(track, trackId, emit)
+      } else if (workletReady) {
+        // Per-track worklet — sends audio for this one participant
+        const worklet = new AudioWorkletNode(audioCtx, 'pcm-sender')
+        worklet.port.onmessage = (e) => emit(e.data.samples)
+        source.connect(worklet)
+      } else {
+        // ScriptProcessor fallback — used when the AudioWorklet module was blocked.
+        // Downsamples native rate → 16k (linear interp) and emits 200ms chunks.
+        const sp = audioCtx.createScriptProcessor(4096, 1, 1)
+        const step = audioCtx.sampleRate / SAMPLE_RATE
+        let native = [], readPos = 0, out = []
+        sp.onaudioprocess = (e) => {
+          const ch = e.inputBuffer.getChannelData(0)
+          for (let i = 0; i < ch.length; i++) native.push(ch[i])
+          while (readPos + 1 < native.length) {
+            const idx = readPos | 0, frac = readPos - idx
+            const s = native[idx] * (1 - frac) + native[idx + 1] * frac
+            const v = s < -1 ? -1 : s > 1 ? 1 : s
+            out.push(v < 0 ? v * 32768 : v * 32767)
+            readPos += step
+            if (out.length >= CHUNK_SAMPLES) { emit(out); out = [] }
+          }
+          const consumed = readPos | 0
+          if (consumed > 0) { native.splice(0, consumed); readPos -= consumed }
+        }
+        // A ScriptProcessor only fires while connected to a destination. Route it
+        // through a zero-gain node so it runs but stays silent.
+        const zero = audioCtx.createGain(); zero.gain.value = 0
+        source.connect(sp); sp.connect(zero); zero.connect(audioCtx.destination)
+      }
+    } catch (e) {
+      console.log('[NoteAI] addAudioTrack FAILED for', trackId.slice(0, 8), '-', (e && e.message))
     }
-
-    // Per-track analyser — measures audio level for speaking detection
-    const analyser = audioCtx.createAnalyser()
-    analyser.fftSize = 512
-    analyser.smoothingTimeConstant = 0.4
-    const dataArray = new Uint8Array(analyser.frequencyBinCount)
-
-    source.connect(worklet)
-    source.connect(analyser)
-
-    trackMeta.set(trackId, { analyser, dataArray, index: myIndex, pc })
 
     // SSRC fast-path runs every tick of checkSpeakers() until name is locked.
     // No index-based fallback — that was the source of swapped names.
+  }
+
+  // ── Fallback capture: tap Meet's OWN playback audio ───────────────────────
+  // On real Google Meet, reading the raw remote WebRTC track (via
+  // MediaStreamTrackProcessor OR createMediaStreamSource) can yield pure silence
+  // even while Meet is decoding and PLAYING that audio — confirmed in production:
+  // three remote tracks at RMS=0 for an entire meeting while a participant was
+  // clearly speaking, yet the identical capture path reads real audio on a
+  // synthetic WebRTC loopback. The raw-track read is the unreliable link.
+  //
+  // Meet renders remote audio through <audio>/<video> elements. A
+  // MediaElementAudioSourceNode taps the element's POST-DECODE output — literally
+  // the samples a human would hear — so it carries real audio whenever Meet is
+  // playing sound, regardless of how the SFU multiplexes the underlying track.
+  // We mix every tapped element into one stream emitted as 'meet-mixed'; speaker
+  // attribution then rides on the DOM active-speaker events the backend already
+  // correlates (currentSpeaker / co-occurrence voting in ingestHandler).
+  const tappedEls = new WeakSet()
+  let mixSink = null            // shared gain node every element tap feeds into
+  let mixCapturing = false
+  let tapCount = 0
+
+  async function ensureMixTap () {
+    if (mixCapturing || !audioInitPromise) return
+    mixCapturing = true
+    try { await audioInitPromise } catch {}
+    if (!audioCtx) { mixCapturing = false; return }
+    const MIX_ID = 'meet-mixed'
+    let firstChunkLogged = false
+    const emit = (samples) => {
+      if (!firstChunkLogged) { firstChunkLogged = true; console.log('[NoteAI] audio flowing for meet-mixed (element tap)') }
+      if (window.noteAISendTrackAudio) window.noteAISendTrackAudio(samples, MIX_ID)
+    }
+
+    mixSink = audioCtx.createGain(); mixSink.gain.value = 1
+    // Keep the graph pulling even if nothing else consumes it (muted output).
+    const zero = audioCtx.createGain(); zero.gain.value = 0
+    mixSink.connect(zero); zero.connect(audioCtx.destination)
+
+    if (workletReady) {
+      const worklet = new AudioWorkletNode(audioCtx, 'pcm-sender')
+      worklet.port.onmessage = (e) => emit(e.data.samples)
+      mixSink.connect(worklet)
+    } else {
+      const sp = audioCtx.createScriptProcessor(4096, 1, 1)
+      const step = audioCtx.sampleRate / SAMPLE_RATE
+      let native = [], readPos = 0, out = []
+      sp.onaudioprocess = (e) => {
+        const ch = e.inputBuffer.getChannelData(0)
+        for (let i = 0; i < ch.length; i++) native.push(ch[i])
+        while (readPos + 1 < native.length) {
+          const idx = readPos | 0, frac = readPos - idx
+          const s = native[idx] * (1 - frac) + native[idx + 1] * frac
+          const v = s < -1 ? -1 : s > 1 ? 1 : s
+          out.push(v < 0 ? v * 32768 : v * 32767)
+          readPos += step
+          if (out.length >= CHUNK_SAMPLES) { emit(out); out = [] }
+        }
+        const consumed = readPos | 0
+        if (consumed > 0) { native.splice(0, consumed); readPos -= consumed }
+      }
+      mixSink.connect(sp); sp.connect(zero)
+    }
+
+    // Diagnostic: report the mixed element-tap level so a silent vs audible
+    // session is visible in bot-diag.log (throttled like the per-track DIAG).
+    const an = audioCtx.createAnalyser(); an.fftSize = 512
+    mixSink.connect(an)
+    const td = new Uint8Array(an.fftSize)
+    let dn = 0
+    setInterval(() => {
+      try {
+        an.getByteTimeDomainData(td)
+        let s = 0; for (let i = 0; i < td.length; i++) { const v = (td[i] - 128) / 128; s += v * v }
+        const rms = Math.sqrt(s / td.length)
+        dn++
+        if (dn <= 10 || dn % 8 === 0) console.log('[NoteAI] DIAG meet-mixed elementRMS=' + rms.toFixed(4) + ' taps=' + tapCount)
+      } catch {}
+    }, 2000)
+  }
+
+  function scanPlaybackElements () {
+    if (!audioInitPromise) return   // no track yet → no AudioContext yet
+    if (!mixSink) { ensureMixTap(); return }
+    const ownSinks = window.__noteAISinks || []
+    for (const el of document.querySelectorAll('audio, video')) {
+      if (tappedEls.has(el)) continue
+      // Skip our OWN per-track decode sinks — they're muted (volume 0), so a
+      // MediaElementSource taps post-mute silence. Only Meet's real, audible
+      // playback elements carry usable samples.
+      if (ownSinks.indexOf(el) !== -1 || el.muted || el.volume === 0) continue
+      const so = el.srcObject
+      const hasAudio = so && typeof so.getAudioTracks === 'function' && so.getAudioTracks().length > 0
+      if (!hasAudio) continue
+      tappedEls.add(el)   // mark before tapping so a throw doesn't retry forever
+      let src
+      try { src = audioCtx.createMediaElementSource(el) }
+      catch (e) { console.log('[NoteAI] element tap skipped -', (e && e.message)); continue }
+      src.connect(mixSink)
+      tapCount++
+      console.log('[NoteAI] tapped Meet playback element #' + tapCount + ' (audioTracks=' + so.getAudioTracks().length + ')')
+    }
   }
 
   // ── Name resolution caches ───────────────────────────────────
@@ -132,7 +553,20 @@
 
   // ── Name extraction from a tile ──────────────────────────────
 
+  // Screen-share pseudo-tiles ("X (Presentation)", "X's screen", generic
+  // "Presentation") are not people. If one is ever treated as a participant,
+  // starting a screen share silently renames speakers mid-meeting.
+  const PSEUDO_NAME_RE = /(presentation|is presenting|presenting now|'s screen|screen share|screenshar|shared screen|\bscreen\b\s*$)/i
+  function isPseudoName (name) {
+    return !name || PSEUDO_NAME_RE.test(String(name).trim())
+  }
+
   function getName (tile) {
+    const n = getNameRaw(tile)
+    return isPseudoName(n) ? null : n
+  }
+
+  function getNameRaw (tile) {
     // Primary (Vexa-derived): span.notranslate — Meet's canonical name element,
     // survives UI redesigns better than hover-button patterns.
     const notranslate = tile.querySelector('span.notranslate')
@@ -234,8 +668,13 @@
         const sized = tiles.map(t => ({ t, area: t.getBoundingClientRect().width * t.getBoundingClientRect().height }))
         sized.sort((a, b) => b.area - a.area)
         if (sized[0].area > sized[1].area * 3) {
-          const n = getName(sized[0].t)
-          if (n) return n
+          // The big tile is usually the presentation itself, named like
+          // "Prince S (Presentation)" — strip the suffix to get the human.
+          const raw = getNameRaw(sized[0].t)
+          if (raw) {
+            const human = String(raw).replace(/\s*\((?:presentation|screen ?share)\)\s*$/i, '').replace(/'s (?:presentation|screen)\s*$/i, '').trim()
+            if (human && !isPseudoName(human)) return human
+          }
         }
       }
     } catch {}
@@ -394,6 +833,21 @@
       }
     }
 
+    // Fallback: on real Meet the per-track analysers read silent (audio is captured
+    // via the element / Web-Audio taps instead), so `loudTracks` is empty and no
+    // speaker_start is emitted above — leaving the backend with no active speaker,
+    // so mixed-stream transcripts show "Speaker N" instead of a real name. Drive
+    // the active speaker from the DOM "currently speaking" tiles alone in that case.
+    if (!loudTracks.length && domNames.length) {
+      for (const name of domNames) {
+        now.add(name)
+        if (!speakingNow.has(name)) {
+          speakingNow.set(name, Date.now())
+          sendEvent({ type: 'speaker_start', name, startMs: Date.now(), meetingId })
+        }
+      }
+    }
+
     for (const [name] of speakingNow) {
       if (!now.has(name)) {
         speakingNow.delete(name)
@@ -414,6 +868,11 @@
       setInterval(checkSpeakers, 300)
       // Lower frequency — DOM changes for screen-share are not high-rate.
       setInterval(checkDomPresenter, 1000)
+      // Tap Meet's playback elements as a robust audio source (the raw remote
+      // track can read silent on real Meet). New participant elements appear over
+      // time, so keep scanning.
+      scanPlaybackElements()
+      setInterval(scanPlaybackElements, 2000)
     }
   }, 1500)
 

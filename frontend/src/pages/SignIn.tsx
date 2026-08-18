@@ -1,6 +1,19 @@
 import { useEffect } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { Container, PublicShell, usePageMeta } from '../marketing/shell'
+import { Icon, type IconName } from '../marketing/icons'
+
+/**
+ * The sign-in page is a public entry point, so it wears the same chrome, type,
+ * and surfaces as the marketing site — only the card is specific to it.
+ */
+const POINTS: { icon: IconName; title: string; desc: string }[] = [
+  { icon: 'calendar', title: 'Calendar auto-join', desc: 'The bot turns up on its own.' },
+  { icon: 'mic', title: 'Live transcription', desc: 'Speaker labels as the call runs.' },
+  { icon: 'sparkles', title: 'AI summaries', desc: 'Decisions and action items.' },
+  { icon: 'video', title: 'Meet, Zoom, Teams', desc: 'One bot, three platforms.' },
+]
 
 export function SignIn() {
   const { user, loading } = useAuth()
@@ -8,117 +21,73 @@ export function SignIn() {
   const [params] = useSearchParams()
   const error = params.get('auth_error')
 
+  usePageMeta(
+    'Sign in — MeetMaster',
+    'Sign in to MeetMaster with your Google account to record, transcribe, and summarise your meetings.',
+  )
+
   // Already signed in — go to dashboard
   useEffect(() => {
     if (!loading && user) navigate('/', { replace: true })
   }, [loading, user, navigate])
 
+  // Session check in flight. Keeps the site's chrome and brand rather than
+  // flashing an unstyled white screen between the marketing site and the app.
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-app-bg">
-        <div className="text-muted text-sm">Loading…</div>
+      <div className="flex h-screen flex-col items-center justify-center gap-4 bg-white">
+        <span className="flex h-10 w-10 items-center justify-center rounded-btn bg-accent text-base font-bold text-white" aria-hidden="true">
+          M
+        </span>
+        <p role="status" className="text-sm text-slate-500">Checking your session…</p>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen lg:h-screen lg:overflow-hidden bg-[#FAF9F6] text-ink font-sans antialiased flex flex-col">
-      {/* ── Navbar ──────────────────────────────────────────────────────── */}
-      <nav className="flex-shrink-0 max-w-[1400px] w-full mx-auto px-5 sm:px-[5%] py-4 sm:py-5 flex items-center justify-between">
-        <a href="/" className="flex items-center gap-2.5 text-xl sm:text-2xl font-extrabold text-accent tracking-tight">
-          <div className="w-8 h-8 bg-accent rounded-md flex items-center justify-center flex-shrink-0">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-            </svg>
-          </div>
-          NoteAI
-        </a>
-      
-      </nav>
-
-      {/* ── Hero + Auth Card ─────────────────────────────────────────────── */}
-      {/* Mobile: auth card only, centered. Desktop: two-column hero + card. */}
-      <main className="flex-1 min-h-0 max-w-[1400px] w-full mx-auto px-5 sm:px-[5%] pb-8 lg:pb-6
-                       flex flex-col items-center justify-center
-                       lg:grid lg:grid-cols-[1.05fr_0.95fr] lg:items-center lg:gap-14">
-
-        {/* Hero copy + compact features — hidden on mobile */}
-        <div className="hidden lg:flex flex-col gap-6">
-          <div className="flex items-center gap-3 text-sm font-bold uppercase tracking-[0.1em] text-accent">
-            <span className="w-7 h-0.5 bg-accent" />
-            Meeting Intelligence
-          </div>
-          <h1 className="text-5xl xl:text-6xl font-extrabold leading-[1.05] tracking-[-0.02em] text-[#1a1a1a]">
-            Every meeting,
-            <span className="block text-accent">captured &amp; transcribed.</span>
-          </h1>
-          <p className="text-lg text-muted max-w-[520px] leading-relaxed">
-            Stop taking notes. NoteAI joins your calls, records audio, and delivers searchable transcripts automatically.
+    <PublicShell>
+      <Container className="grid items-center gap-12 py-16 sm:py-20 lg:grid-cols-2 lg:gap-16">
+        <div data-reveal>
+          <p className="text-[12px] font-semibold uppercase tracking-[.1em] text-accent">Meeting intelligence</p>
+          <h1 className="display mt-4 text-[30px] leading-[1.06] lg:text-[40px]">Every meeting, written down.</h1>
+          <p className="measure mt-5 text-[16px] leading-relaxed text-slate-600 lg:text-[17px]">
+            Stop taking notes. MeetMaster joins your calls, transcribes them with speaker labels, and
+            sends the summary when everyone hangs up.
           </p>
-
-          <div id="features" className="grid grid-cols-2 gap-x-6 gap-y-4 mt-3 max-w-[560px]">
-            <Feature
-              title="Calendar sync"
-              desc="Imported automatically."
-              icon={
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
-                </svg>
-              }
-            />
-            <Feature
-              title="Auto-join bot"
-              desc="Meet, Zoom &amp; Teams."
-              icon={
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" /><line x1="8" y1="22" x2="16" y2="22" />
-                </svg>
-              }
-            />
-            <Feature
-              title="AI transcription"
-              desc="Speaker identification."
-              icon={
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-              }
-            />
-            <Feature
-              title="AI summaries"
-              desc="Action items &amp; insights."
-              icon={
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
-                </svg>
-              }
-            />
-          </div>
+          {/* The proof points are supporting detail — the card comes first on mobile. */}
+          <ul className="mt-10 hidden gap-6 sm:grid-cols-2 lg:grid">
+            {POINTS.map(p => (
+              <li key={p.title} className="flex items-start gap-3">
+                <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-btn bg-accent-light text-accent">
+                  <Icon name={p.icon} size={18} />
+                </span>
+                <div className="min-w-0">
+                  <h2 className="text-[15px] font-semibold text-ink">{p.title}</h2>
+                  <p className="mt-1 text-[14px] leading-snug text-slate-600">{p.desc}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
 
-        {/* Auth card — full-width on mobile, right-aligned on desktop */}
-        <div className="bg-white rounded-[20px] p-8 sm:p-10 lg:p-12 border border-black/[0.03] shadow-[0_4px_20px_-2px_rgba(0,0,0,0.05),0_2px_8px_-1px_rgba(0,0,0,0.03)] w-full max-w-md lg:justify-self-end">
-          {/* Mobile-only tagline above form */}
-          <div className="lg:hidden mb-6 text-center">
-            <p className="text-sm font-semibold text-accent uppercase tracking-widest mb-1">Meeting Intelligence</p>
-            <h1 className="text-2xl font-extrabold tracking-tight text-[#1a1a1a]">Capture every meeting.</h1>
-          </div>
-
-          <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-3">Welcome back</h2>
-          <p className="text-sm sm:text-base text-muted mb-8">Sign in with your Google account to continue.</p>
+        <div data-reveal className="surface mx-auto w-full max-w-md p-8 sm:p-10 lg:justify-self-end">
+          <h2 className="display text-[24px] leading-tight">Welcome back</h2>
+          <p className="mt-2 text-[15px] text-slate-600">
+            Sign in with your Google account to continue.
+          </p>
 
           {error && (
-            <div className="bg-red-50 text-red-700 border border-red-200 rounded-lg px-4 py-3 mb-6 text-sm font-semibold">
+            <p role="alert" className="mt-6 rounded-btn border border-red-200 bg-red-50 px-4 py-3 text-sm text-danger">
               Sign-in failed: {error.replace(/_/g, ' ')}
-            </div>
+            </p>
           )}
 
           <a
             href="/auth/google"
-            className="flex items-center justify-center gap-3 w-full py-3.5 px-4 border-[1.5px] border-gray-200 rounded-[10px] bg-white font-semibold text-base hover:bg-gray-50 hover:border-gray-300 transition-colors"
+            className="focus-ring mt-8 flex h-12 w-full items-center justify-center gap-3 rounded-btn border border-slate-300 bg-white text-[15px] font-medium text-ink transition-colors hover:bg-slate-50"
           >
-            <svg width="20" height="20" viewBox="0 0 24 24">
+            {/* Google's own mark — not redrawn, not substituted with a generic icon. */}
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
               <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
               <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
               <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" />
@@ -127,33 +96,15 @@ export function SignIn() {
             Continue with Google
           </a>
 
-          <div className="flex items-center gap-4 my-7 text-[11px] font-bold tracking-wider uppercase text-gray-300">
-            <span className="flex-1 h-px bg-gray-100" />
-            secure - encrypted
-            <span className="flex-1 h-px bg-gray-100" />
-          </div>
-
-          <div className="text-center text-sm text-muted leading-relaxed">
-            By signing in you agree to our <a href="#" className="text-accent font-semibold hover:underline">Terms of Service</a>.
-            <br />
-            Your Google account is used only to authenticate and access your calendar.
-          </div>
+          <p className="mt-6 border-t border-slate-200 pt-6 text-[13px] leading-relaxed text-slate-500">
+            By signing in you agree to our{' '}
+            <Link to="/terms" className="focus-ring rounded font-medium text-accent hover:underline">Terms of Service</Link>{' '}
+            and{' '}
+            <Link to="/privacy" className="focus-ring rounded font-medium text-accent hover:underline">Privacy Policy</Link>.
+            Your Google account is used only to authenticate and to access the data you grant.
+          </p>
         </div>
-      </main>
-    </div>
-  )
-}
-
-function Feature({ title, desc, icon }: { title: string; desc: string; icon: React.ReactNode }) {
-  return (
-    <div className="flex items-start gap-3">
-      <div className="w-10 h-10 bg-[#FFF0E9] text-accent rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5">
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <h4 className="text-base font-bold leading-tight">{title}</h4>
-        <p className="text-sm text-muted leading-snug mt-1">{desc}</p>
-      </div>
-    </div>
+      </Container>
+    </PublicShell>
   )
 }

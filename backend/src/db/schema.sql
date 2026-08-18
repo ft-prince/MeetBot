@@ -17,6 +17,14 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at       TIMESTAMPTZ DEFAULT now()
 );
 
+-- Subscription plan + admin flag. Limits for each plan live in
+-- src/services/planService.ts (PLANS), not in the database — they change with a
+-- deploy, and usage is counted from `meetings` so it can't drift.
+-- plan_until NULL on a paid plan = no expiry; a past date degrades to free.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan       TEXT NOT NULL DEFAULT 'free';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_until TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin   BOOLEAN NOT NULL DEFAULT false;
+
 -- ── Sessions (connect-pg-simple) ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS session (
   sid     TEXT PRIMARY KEY,
@@ -46,6 +54,10 @@ CREATE TABLE IF NOT EXISTS meetings (
 -- Idempotent column adds for existing installations
 ALTER TABLE meetings ADD COLUMN IF NOT EXISTS processing_status JSONB DEFAULT '{}';
 ALTER TABLE meetings ADD COLUMN IF NOT EXISTS language TEXT;
+-- Post-meeting delivery + unread-reminder tracking
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS viewed_at             TIMESTAMPTZ; -- first time the owner opened it in the dashboard
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS summary_email_sent_at TIMESTAMPTZ; -- post-meeting results email delivered
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS reminder_sent_at      TIMESTAMPTZ; -- unread-meeting reminder delivered
 
 CREATE INDEX IF NOT EXISTS idx_meetings_code    ON meetings(meeting_code);
 CREATE INDEX IF NOT EXISTS idx_meetings_started ON meetings(started_at DESC);
@@ -244,3 +256,8 @@ CREATE TABLE IF NOT EXISTS email_sync_state (
   sync_status      TEXT DEFAULT 'idle' CHECK (sync_status IN ('idle', 'syncing', 'error')),
   error_message    TEXT
 );
+
+-- How far back Gmail is fetched, and (by default) how far back threads are sent
+-- for AI analysis. Older threads stay in the DB as searchable metadata but are
+-- not auto-analyzed — see analyzeUnanalyzedThreads().
+ALTER TABLE email_sync_state ADD COLUMN IF NOT EXISTS sync_days INTEGER DEFAULT 30;

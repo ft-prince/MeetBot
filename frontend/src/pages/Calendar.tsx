@@ -11,6 +11,17 @@ import type { CalendarEvent } from '../lib/types'
 
 type EventStatus = 'live' | 'upcoming' | 'done'
 
+/** How often the open page re-pulls from Google. */
+const SYNC_INTERVAL_MS = 60_000
+
+function fmtSyncedAt(ms: number | null): string {
+  if (!ms) return ''
+  const secs = Math.round((Date.now() - ms) / 1000)
+  if (secs < 10) return 'just now'
+  if (secs < 60) return `${secs}s ago`
+  return `${Math.round(secs / 60)}m ago`
+}
+
 function statusOf(ev: CalendarEvent, nowMs: number): EventStatus {
   const startMs = new Date(ev.startTime).getTime()
   const endMs = new Date(ev.endTime).getTime()
@@ -25,29 +36,62 @@ export function Calendar() {
   const navigate = useNavigate()
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const [syncing, setSyncing] = useState(false)
+  const [syncedAt, setSyncedAt] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
 
-  const load = async () => {
-    if (!user) return
-    try { setEvents((await api.listEvents()).events) } catch {}
+  /**
+   * Pull from Google, not just from our DB.
+   *
+   * `silent` distinguishes the automatic passes (mount, poll, tab focus) from
+   * the explicit button: automatic failures fall back to the last-known events
+   * and surface as a small inline note, because an alert() firing on a timer
+   * while you are reading the page is intolerable.
+   */
+  const sync = async (silent = false) => {
+    if (!user) {
+      if (!silent) setError('Connect your Google account first.')
+      return
+    }
+    if (!silent) setSyncing(true)
+    try {
+      const { events } = await api.syncCalendar()
+      setEvents(events)
+      setSyncedAt(Date.now())
+      setError(null)
+    } catch (err) {
+      // Google unreachable or token expired — show whatever the DB still has
+      // rather than emptying the page.
+      try { setEvents((await api.listEvents()).events) } catch {}
+      setError((err as Error).message)
+    } finally {
+      if (!silent) setSyncing(false)
+    }
   }
-  useEffect(() => { load() }, [user])
+
+  // Live sync: on mount, then every 60s, and immediately whenever the tab is
+  // refocused. Polling pauses while the tab is hidden so a backgrounded page
+  // does not burn Google Calendar quota all day.
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+    const tick = () => { if (!cancelled && document.visibilityState === 'visible') sync(true) }
+
+    tick()
+    const id = setInterval(tick, SYNC_INTERVAL_MS)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [user])
 
   // Tick "now" once per minute so status pills update without a refresh
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(id)
   }, [])
-
-  const sync = async () => {
-    if (!user) return alert('Connect your Google account first.')
-    setSyncing(true)
-    try {
-      const { events } = await api.syncCalendar()
-      setEvents(events)
-    } catch (err) { alert((err as Error).message) }
-    finally { setSyncing(false) }
-  }
 
   const toggleAutoJoin = async (ev: CalendarEvent) => {
     const next = !ev.autoJoin
@@ -91,7 +135,26 @@ export function Calendar() {
       <Topbar
         title="Calendar"
         subtitle="Past, live, and upcoming meetings from your Google Calendar"
-        right={<button onClick={sync} disabled={syncing} className="btn btn-primary btn-sm whitespace-nowrap">{syncing ? 'Syncing…' : '🔄 Sync'}</button>}
+        right={
+          <div className="flex items-center gap-3">
+            {/* Sync is automatic; this reads as status, and the button is only
+                for "refresh right now" impatience. */}
+            <span className="hidden sm:flex items-center gap-1.5 text-xs text-muted whitespace-nowrap">
+              <span
+                className={'w-1.5 h-1.5 rounded-full ' + (error ? 'bg-danger' : 'bg-success')}
+                aria-hidden="true"
+              />
+              {error ? 'Sync failed' : syncedAt ? `Synced ${fmtSyncedAt(syncedAt)}` : 'Syncing…'}
+            </span>
+            <button
+              onClick={() => sync()}
+              disabled={syncing}
+              className="btn btn-secondary btn-sm whitespace-nowrap"
+            >
+              {syncing ? 'Syncing…' : 'Refresh'}
+            </button>
+          </div>
+        }
       />
       <div className="p-3 sm:p-6 lg:p-8 flex-1 overflow-y-auto">
         {!user ? (
@@ -99,12 +162,15 @@ export function Calendar() {
             <strong>Connect your Google account</strong> to sync upcoming meetings and enable auto-join.
           </div>
         ) : events.length === 0 ? (
-          <>
-            <div className="bg-accent-light border border-accent/20 rounded-lg px-4 py-3 text-sm text-amber-800 mb-4">
-              No meetings found. Sync your Google Calendar to get started.
-            </div>
-            <button onClick={sync} className="btn btn-primary btn-sm">🔄 Sync Calendar Now</button>
-          </>
+          // Sync already ran on mount, so there is nothing for the reader to do
+          // here — this states what is true rather than offering a second button.
+          <div className="bg-accent-light border border-accent/20 rounded-lg px-4 py-3 text-sm text-amber-800">
+            {syncing || !syncedAt
+              ? 'Checking your Google Calendar…'
+              : error
+                ? `Could not reach Google Calendar: ${error}`
+                : 'No meetings with a video link in the next 25 days. New events appear here automatically.'}
+          </div>
         ) : (
           <div className="flex flex-col gap-8">
             {live.length > 0 && (

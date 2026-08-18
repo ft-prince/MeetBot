@@ -6,6 +6,9 @@ export type OnTranscriptCallback = (segment: TranscriptSegment, isFinal: boolean
 
 const DEFAULT_WHISPER_URL = 'ws://localhost:3002';
 const RECONNECT_DELAY_MS = 3000;
+// Audio buffered while the sidecar socket is down: 300 × 200ms chunks ≈ 60s.
+// Without this, everything spoken during a reconnect window was silently lost.
+const MAX_QUEUE_CHUNKS = 300;
 
 /**
  * WebSocket client for a Python STT sidecar speaking the simple
@@ -17,6 +20,7 @@ export class WhisperClient {
   private ws: WebSocket | null = null;
   private isOpen = false;
   private shouldReconnect = true;
+  private audioQueue: Buffer[] = [];
   private readonly url: string;
 
   constructor(
@@ -33,7 +37,12 @@ export class WhisperClient {
   }
 
   sendAudio(chunk: Buffer | ArrayBuffer): void {
-    if (!this.isOpen || !this.ws) return;
+    if (!this.isOpen || !this.ws) {
+      // Buffer while (re)connecting so speech during an outage still transcribes.
+      this.audioQueue.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      if (this.audioQueue.length > MAX_QUEUE_CHUNKS) this.audioQueue.shift();
+      return;
+    }
     this.ws.send(chunk);
   }
 
@@ -51,6 +60,10 @@ export class WhisperClient {
     this.ws.on('open', () => {
       this.isOpen = true;
       console.log('[whisper-client] Connected to whisper service');
+      // Flush audio buffered while the socket was down.
+      const queued = this.audioQueue;
+      this.audioQueue = [];
+      for (const buf of queued) { try { this.ws!.send(buf); } catch { break; } }
     });
 
     this.ws.on('message', (data) => {

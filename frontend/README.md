@@ -1,6 +1,6 @@
-# NoteAI — Frontend
+# MeetMaster — Frontend
 
-React 18 + TypeScript + Vite dashboard for NoteAI. It handles Google sign-in, lets users dispatch the meeting bot, renders the live transcript stream, and shows the AI-generated summary once the meeting ends.
+React 18 + TypeScript + Vite dashboard for MeetMaster. It handles Google sign-in, lets users dispatch the meeting bot, renders the live transcript stream, and shows the AI-generated summary once the meeting ends.
 
 For the monorepo overview see [../README.md](../README.md). For the Express service this app talks to, see [../backend/README.md](../backend/README.md).
 

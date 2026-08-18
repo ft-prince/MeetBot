@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import nodemailer from 'nodemailer';
 import { config } from '../config';
 import { getUserById } from '../services/googleAuth';
+import { getUsage } from '../services/planService';
 
 const router = Router();
 
@@ -21,6 +22,10 @@ const ISSUE_LABELS: Record<string, string> = {
   'auto-join-failed':          'Auto-join didn\'t work',
   'transcript-not-generated':  'Transcript not generated',
   'summary-missing':           'AI summary missing',
+  // Upgrades have no payment provider yet, so they arrive here as a ticket and an
+  // admin sets the plan by hand. Kept distinct from 'other' so they're filterable.
+  'upgrade-request':           'Plan upgrade request',
+  'billing':                   'Billing question',
   'other':                     'Other issue',
 };
 
@@ -51,6 +56,8 @@ router.post('/', async (req: Request, res: Response) => {
   const user = await getUserById(userId).catch(() => null);
   const userEmail = user?.email ?? 'unknown';
   const userName  = user?.name  ?? 'unknown';
+  // Plan context turns "I want to upgrade" into an actionable ticket.
+  const usage = await getUsage(userId);
 
   // Always log so nothing is silently dropped
   console.log(`[support] Ticket from user ${userId} (${userEmail})`);
@@ -58,6 +65,7 @@ router.post('/', async (req: Request, res: Response) => {
   console.log(`[support]   Message: ${trimmed}`);
 
   // Send email if SMTP is configured
+  let delivered = false;
   const smtpReady = config.smtp.host && config.smtp.user && config.smtp.pass && config.supportEmail;
   if (smtpReady) {
     try {
@@ -74,10 +82,11 @@ router.post('/', async (req: Request, res: Response) => {
       await transporter.sendMail({
         from:    config.smtp.from,
         to:      config.supportEmail,
-        subject: `[NoteAI Support] ${issueLabel}`,
+        subject: `[MeetMaster Support] ${issueLabel}`,
         text: [
           `Issue Type: ${issueLabel}`,
           `User:       ${userName} <${userEmail}>`,
+          `Plan:       ${usage.planName} (${usage.meetingsUsed}${usage.meetingsLimit === null ? '' : `/${usage.meetingsLimit}`} meetings this month)`,
           `User ID:    ${userId}`,
           `Submitted:  ${submittedAt}`,
           '',
@@ -89,6 +98,7 @@ router.post('/', async (req: Request, res: Response) => {
             <tr><td style="padding:4px 8px 4px 0"><strong>Issue type:</strong></td><td>${issueLabel}</td></tr>
             <tr><td style="padding:4px 8px 4px 0"><strong>Name:</strong></td><td>${userName}</td></tr>
             <tr><td style="padding:4px 8px 4px 0"><strong>Email:</strong></td><td><a href="mailto:${userEmail}">${userEmail}</a></td></tr>
+            <tr><td style="padding:4px 8px 4px 0"><strong>Plan:</strong></td><td>${usage.planName} — ${usage.meetingsUsed}${usage.meetingsLimit === null ? '' : `/${usage.meetingsLimit}`} meetings this month</td></tr>
             <tr><td style="padding:4px 8px 4px 0"><strong>User ID:</strong></td><td style="font-family:monospace;font-size:12px">${userId}</td></tr>
             <tr><td style="padding:4px 8px 4px 0"><strong>Submitted:</strong></td><td>${submittedAt}</td></tr>
           </table>
@@ -98,15 +108,22 @@ router.post('/', async (req: Request, res: Response) => {
       });
 
       console.log(`[support] Email sent to ${config.supportEmail}`);
+      delivered = true;
     } catch (err) {
-      // Email failure is non-fatal — ticket was already logged
+      // The ticket is logged either way, but telling the user "sent" when nothing
+      // left the building is how upgrade requests quietly disappear.
       console.error('[support] Email delivery failed:', (err as Error).message);
+      res.status(502).json({
+        error: `We could not deliver your message. Please email us directly at ${config.supportEmail}.`,
+      });
+      return;
     }
   } else {
-    console.log('[support] SMTP not configured — ticket logged only (set SUPPORT_EMAIL + SMTP_* in .env to enable email)');
+    console.warn('[support] SMTP not configured — ticket logged only (set SUPPORT_EMAIL + SMTP_* in .env to enable email)');
   }
 
-  res.json({ ok: true });
+  // `delivered:false` means it is sitting in the server log, not an inbox.
+  res.json({ ok: true, delivered });
 });
 
 export default router;

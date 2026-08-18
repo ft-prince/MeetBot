@@ -1,4 +1,4 @@
-# NoteAI — Backend
+# MeetMaster — Backend
 
 Express + TypeScript service that runs the meeting bot, ingests per-speaker audio, brokers transcription via Deepgram, persists everything to PostgreSQL, runs a tiered AI analysis pipeline (Groq), schedules auto-launched meetings, and broadcasts live events over WebSocket.
 

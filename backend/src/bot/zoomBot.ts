@@ -3,6 +3,7 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import { config } from '../config'
+import { launchPersistentContextResilient } from './browserLaunch'
 
 export interface ZoomBotOptions {
   meetingUrl: string
@@ -30,7 +31,6 @@ const CHROME_ARGS = [
   '--disable-features=IsolateOrigins,site-per-process',
   '--disable-site-isolation-trials',
   '--no-default-browser-check',
-  '--disable-extensions-except=',
 ]
 
 export class ZoomBot {
@@ -42,7 +42,7 @@ export class ZoomBot {
   private blockReason: string | null = null
 
   async start(opts: ZoomBotOptions): Promise<void> {
-    const { meetingUrl, displayName = 'NoteAI Recorder' } = opts
+    const { meetingUrl, displayName = 'MeetMaster Recorder' } = opts
 
     const webClientUrl = toZoomWebClientUrl(meetingUrl)
 
@@ -53,20 +53,20 @@ export class ZoomBot {
 
     if (profileDir) {
       console.log(`[zoom-bot] Using saved Chrome profile: ${profileDir}`)
-      this.context = await chromium.launchPersistentContext(profileDir, {
+      this.context = await launchPersistentContextResilient(profileDir, {
         channel: 'chrome',
-        headless: false,
+        headless: config.botHeadless,
         args: CHROME_ARGS,
         permissions: ['microphone', 'camera'],
         ignoreDefaultArgs: ['--enable-automation'],
-      })
+      }, 'zoom-bot')
       this.persistentContext = true
     } else {
       console.log('[zoom-bot] No Chrome profile found — joining as guest')
       console.log('[zoom-bot] Run `npx tsx scripts/zoom-login.ts` once to fix this.')
       this.browser = await chromium.launch({
         channel: 'chrome',
-        headless: false,
+        headless: config.botHeadless,
         args: CHROME_ARGS,
         ignoreDefaultArgs: ['--enable-automation'],
       })
@@ -75,13 +75,19 @@ export class ZoomBot {
       })
     }
 
+    // Reuse a tab the persistent context already has open. Closing the LAST tab
+    // of a persistent Chrome context (channel: 'chrome') shuts the browser down,
+    // so the following newPage() fails with
+    // "Protocol error (Target.createTarget): Failed to open a new tab".
     if (this.persistentContext && this.context) {
-      for (const p of this.context.pages()) {
+      const existingPages = this.context.pages()
+      this.page = existingPages[0] ?? await this.context.newPage()
+      for (const p of existingPages.slice(1)) {
         try { await p.close() } catch {}
       }
+    } else {
+      this.page = await this.context.newPage()
     }
-
-    this.page = await this.context.newPage()
 
     // tsx/esbuild wraps named functions with a __name() helper. When Playwright
     // serializes our inline page functions into the page, that helper is missing
@@ -413,7 +419,12 @@ export class ZoomBot {
   }
 
   private async waitForMeetingUI(page: Page): Promise<void> {
-    for (let i = 0; i < 300; i++) {
+    // Base timeout 5 min. While Zoom explicitly says we're in the waiting room
+    // or the host hasn't started yet (host joining late is normal), keep waiting
+    // up to 20 min instead of falsely reporting "blocked".
+    const BASE_S = 300
+    const EXTENDED_S = 1200
+    for (let i = 0; i < EXTENDED_S; i++) {
       if (this.ended) return
 
       if (i >= 5 && await this.checkBlocked(page)) return
@@ -425,12 +436,21 @@ export class ZoomBot {
         }
       } catch {}
 
+      let holding = false
+      if (i >= BASE_S || i % 15 === 0) {
+        holding = await page.evaluate(() => {
+          const text = (document.body.innerText || '').slice(0, 4000)
+          return /waiting room|host will let you in|waiting for the host|host has another meeting/i.test(text)
+        }).catch(() => false)
+        if (i >= BASE_S && !holding) break
+      }
+
       if (i > 0 && i % 30 === 0) {
-        console.log(`[zoom-bot] Waiting for meeting UI (${i}s) — may be in waiting room`)
+        console.log(`[zoom-bot] Waiting for meeting UI (${i}s)${holding ? ' — in waiting room / host not started' : ''}`)
       }
       await page.waitForTimeout(1000).catch(() => {})
     }
-    console.warn('[zoom-bot] Meeting UI not detected after 5 min')
+    console.warn('[zoom-bot] Meeting UI not detected — giving up')
     this.ended = true
   }
 
@@ -512,6 +532,8 @@ export class ZoomBot {
       names.filter(n =>
         !/^note/i.test(n) && !/recorder/i.test(n) &&
         !NAME_STOPWORDS.has(n.toLowerCase()) &&
+        // Screen-share pseudo-entries ("X's screen", "screen share") are not people.
+        !/(presentation|presenting|is sharing|screen ?share|'s screen|\bscreen\b\s*$)/i.test(n) &&
         n.length >= 2 && n.length <= 50
       )
     )
@@ -540,10 +562,17 @@ export class ZoomBot {
 
   private watchForAlone(onEnded?: () => void): void {
     const page = this.page!
-    const ALONE_MS = 2 * 60 * 1000
+    const aloneMin = Math.max(1, config.botAloneExitMin)
+    const ALONE_MS = aloneMin * 60 * 1000
     const CHECK_MS = 30_000
     const GRACE_MS = 60_000
     let aloneAt: number | null = null
+    // An empty scrape is ambiguous: "everyone left" and "the participant
+    // selectors broke / panel closed" look identical. Only trust 0-others as
+    // "alone" after the scraper has POSITIVELY seen another participant at
+    // least once this meeting — otherwise a scraping failure would make the
+    // bot abandon an active call.
+    let everSawOthers = false
     const joinedAt = Date.now()
 
     const iv = setInterval(async () => {
@@ -554,18 +583,36 @@ export class ZoomBot {
         // an empty meeting (0 others) counts as alone — a single remote person
         // means the bot should stay.
         const others = (await this.scrapeParticipantNames(page)).length
-        if (others === 0) {
-          if (!aloneAt) { aloneAt = Date.now(); console.log('[zoom-bot] Alone — will leave in 2 min') }
+        if (others > 0) everSawOthers = true
+        if (others === 0 && everSawOthers) {
+          if (!aloneAt) { aloneAt = Date.now(); console.log(`[zoom-bot] Alone — will leave in ${aloneMin} min if no one returns`) }
           else if (Date.now() - aloneAt >= ALONE_MS) {
-            console.log('[zoom-bot] Alone 2 min — leaving'); clearInterval(iv)
+            console.log(`[zoom-bot] Alone ${aloneMin} min — leaving`); clearInterval(iv)
             if (!this.ended) { this.ended = true; onEnded?.(); await this.stop() }
           }
         } else {
-          if (aloneAt) console.log(`[zoom-bot] Participants rejoined (${others})`)
+          if (aloneAt && others > 0) console.log(`[zoom-bot] Participants rejoined (${others})`)
           aloneAt = null
         }
       } catch {}
     }, CHECK_MS)
+  }
+
+  // Health probe for the botManager duration backstop: still on a Zoom page and
+  // Chrome responds. While true the backstop re-arms instead of force-exiting.
+  async isMeetingHealthy(): Promise<boolean> {
+    const page = this.page
+    if (this.ended || !page) return false
+    try {
+      if (!/zoom\.us|zoomgov\.com/i.test(page.url())) return false
+      await Promise.race([
+        page.evaluate(() => document.readyState),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('page unresponsive')), 10_000)),
+      ])
+      return true
+    } catch {
+      return false
+    }
   }
 
   // ── End detection ─────────────────────────────────────────────────────────

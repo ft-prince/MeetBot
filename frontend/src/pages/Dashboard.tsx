@@ -3,10 +3,12 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Topbar } from '../components/Topbar'
 import { Pill } from '../components/Pill'
 import { CreateMeetingModal } from '../components/CreateMeetingModal'
+import { UsageCard } from '../components/UsageCard'
 import { useAuth } from '../context/AuthContext'
 import { useLiveMeetings } from '../hooks/useLiveMeetings'
 import { api } from '../lib/api'
 import { fmtDate, fmtDuration, fmtTimeOfDay, timeUntil } from '../lib/format'
+import { normalizeMeetingUrl } from '../lib/meetingUrl'
 import type { CalendarEvent, MeetingRow, ScheduledMeeting } from '../lib/types'
 
 type UpcomingItem =
@@ -14,7 +16,7 @@ type UpcomingItem =
   | { kind: 'scheduled'; id: string; title: string; startTime: string; scheduled: ScheduledMeeting }
 
 export function Dashboard() {
-  const { user } = useAuth()
+  const { user, refresh } = useAuth()
   const { start: startLive } = useLiveMeetings()
   const navigate = useNavigate()
 
@@ -22,21 +24,25 @@ export function Dashboard() {
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const [scheduled, setScheduled] = useState<ScheduledMeeting[]>([])
   const [url, setUrl] = useState("")
+  const [title, setTitle] = useState("")
   const [joining, setJoining] = useState(false)
   const [joinError, setJoinError] = useState<string | null>(null)
   const [loadingMeetings, setLoadingMeetings] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [startingId, setStartingId] = useState<string | null>(null)
 
-  const load = async () => {
-    setLoadingMeetings(true)
+  // `silent` skips the loading spinner so the 30s background refresh doesn't
+  // flicker the panels — used to keep meeting status (Live Now, Processing→Done)
+  // current in near-real-time without a manual reload.
+  const load = async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoadingMeetings(true)
     try {
       const { meetings: list } = await api.listMeetings()
       setMeetings(list)
     } catch {
       // non-fatal
     } finally {
-      setLoadingMeetings(false)
+      if (!opts?.silent) setLoadingMeetings(false)
     }
     try {
       const { scheduled: sList } = await api.listScheduledMeetings()
@@ -54,10 +60,29 @@ export function Dashboard() {
 
   useEffect(() => { load() }, [user]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep the dashboard fresh: refresh meeting/scheduled/event status every 30s so
+  // a meeting that just started (Live Now) or finished (Processing → Done)
+  // reflects without a manual reload.
+  useEffect(() => {
+    const iv = setInterval(() => load({ silent: true }), 30_000)
+    return () => clearInterval(iv)
+  }, [user]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A meeting row with no `ended_at` is only genuinely live if it started recently —
+  // a bot that crashed or a container that died leaves the row open forever, which
+  // used to inflate "Live Now" and hide real live meetings among stale ones.
+  // ponytail: 6h wall-clock cutoff. Replace with a bot heartbeat if meetings
+  // legitimately run longer than that.
+  const STALE_AFTER_MS = 6 * 3_600_000
+  const liveMeetings = useMemo(() => {
+    const cutoff = Date.now() - STALE_AFTER_MS
+    return meetings.filter(m => !m.ended_at && new Date(m.started_at).getTime() > cutoff)
+  }, [meetings])
+
   const stats = useMemo(() => {
     const weekAgo = Date.now() - 7 * 86_400_000
     const completed = meetings.filter(m => m.ended_at).length
-    const live = meetings.filter(m => !m.ended_at).length
+    const live = liveMeetings.length
     const summarised = meetings.filter(m => m.has_summary).length
     const thisWeek = meetings.filter(m => new Date(m.started_at).getTime() >= weekAgo).length
     const totalMs = meetings.reduce((s, m) => s + (m.duration_ms || 0), 0)
@@ -73,7 +98,7 @@ export function Dashboard() {
       avgMs,
       upcomingCount,
     }
-  }, [meetings, scheduled])
+  }, [meetings, scheduled, liveMeetings])
 
   const upcoming = useMemo<UpcomingItem[]>(() => {
     const now = Date.now()
@@ -111,7 +136,9 @@ export function Dashboard() {
     }
   }
 
-  const recent = useMemo(() => meetings.filter(m => m.ended_at).slice(0, 10), [meetings])
+  // Recent Meetings lists only completed (summarized) meetings — meetings still
+  // processing (ended but no summary yet) are hidden until their summary is ready.
+  const recent = useMemo(() => meetings.filter(m => m.ended_at && m.has_summary).slice(0, 10), [meetings])
 
   const greeting = (() => {
     const h = new Date().getHours()
@@ -119,19 +146,20 @@ export function Dashboard() {
   })()
 
   const join = async () => {
-    const trimmed = url.trim()
-    if (!trimmed) return
-    const isValidUrl = trimmed.includes('meet.google.com') || /zoom\.us\/(j|wc\/join)\/\d+/.test(trimmed) || /teams\.(microsoft|live)\.com/.test(trimmed)
-    if (!isValidUrl) {
-      setJoinError('Please enter a valid Google Meet, Zoom, or Microsoft Teams link.')
+    const { url: normalized, error } = normalizeMeetingUrl(url)
+    if (!normalized) {
+      if (url.trim()) setJoinError(error)
       return
     }
     setJoinError(null)
     setJoining(true)
+    const trimmedTitle = title.trim()
     try {
-      const { meetingId } = await api.joinMeeting(trimmed)
-      startLive(meetingId)
+      const { meetingId } = await api.joinMeeting(normalized, trimmedTitle || undefined)
+      startLive(meetingId, trimmedTitle || undefined)
+      refresh() // the meeting just consumed quota — keep the usage card honest
       setUrl("")
+      setTitle("")
       navigate('/live')
     } catch (err) {
       setJoinError((err as Error).message)
@@ -151,11 +179,16 @@ export function Dashboard() {
           <p className="text-xs sm:text-sm text-muted">Here's what's happening with your meetings.</p>
         </div>
 
+        {/* Only renders when the monthly meeting quota is nearly or fully used. */}
+        <div className="mb-4 sm:mb-6 empty:mb-0">
+          <UsageCard compact />
+        </div>
+
         {/* Quick Join + Schedule */}
         <div className="card p-3 sm:p-5 mb-4 sm:mb-6">
           <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
             <div className="text-sm font-semibold flex items-center gap-2">
-              <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+              <svg width="16" height="16" fill="none" stroke="#2F55D4" strokeWidth="2" viewBox="0 0 24 24">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
                 <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
@@ -166,23 +199,58 @@ export function Dashboard() {
               + Schedule Meeting
             </button>
           </div>
-          <div className="flex flex-col sm:flex-row gap-2.5">
+          <div className="flex flex-col gap-2.5">
             <input
-              className="input flex-1"
-              type="url"
-              placeholder="Paste Google Meet, Zoom, or Teams link"
-              value={url}
-              onChange={e => { setUrl(e.target.value); setJoinError(null) }}
+              className="input"
+              type="text"
+              placeholder="Meeting title (optional) — e.g. Client Demo - ABC Corp"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
               onKeyDown={e => e.key === "Enter" && join()}
+              maxLength={200}
             />
-            <button onClick={join} disabled={joining} className="btn btn-primary">
-              {joining ? "Launching…" : "+ Start Recording"}
-            </button>
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <input
+                className="input flex-1"
+                type="text"
+                placeholder="Paste a Meet/Zoom/Teams link or a Meet code (abc-defg-hij)"
+                value={url}
+                onChange={e => { setUrl(e.target.value); setJoinError(null) }}
+                onKeyDown={e => e.key === "Enter" && join()}
+              />
+              <button onClick={join} disabled={joining} className="btn btn-primary">
+                {joining ? "Launching…" : "+ Start Recording"}
+              </button>
+            </div>
           </div>
           {joinError && (
             <p className="mt-2 text-xs text-danger">{joinError}</p>
           )}
         </div>
+
+        {/* Live now — only rendered when something is actually recording */}
+        {liveMeetings.length > 0 && (
+          <div className="card overflow-hidden mb-4 sm:mb-6 border-danger/30">
+            <div className="px-3 sm:px-5 py-3 border-b border-gray-200 flex items-center justify-between">
+              <span className="text-sm font-bold flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-danger animate-pulse-slow" />
+                Live Now
+                <span className="text-muted font-medium">({liveMeetings.length})</span>
+              </span>
+              <Link to="/live" className="btn btn-secondary btn-sm">Open Live Recording</Link>
+            </div>
+            {liveMeetings.map(m => (
+              <DashItem
+                key={m.id}
+                icon={<LiveIcon />}
+                title={m.title || m.meeting_code}
+                sub={"Started " + fmtTimeOfDay(m.started_at) + " · running " + fmtDuration(Date.now() - new Date(m.started_at).getTime())}
+                right={<Pill variant="live">Recording</Pill>}
+                onClick={() => navigate("/live")}
+              />
+            ))}
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4 mb-4 sm:mb-6">
@@ -311,10 +379,21 @@ export function Dashboard() {
   )
 }
 
+function LiveIcon() {
+  return (
+    <div className="w-9 h-9 rounded-md flex items-center justify-center bg-red-100">
+      <svg width="16" height="16" fill="none" stroke="#B91C1C" strokeWidth="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" />
+        <circle cx="12" cy="12" r="3" fill="#B91C1C" />
+      </svg>
+    </div>
+  )
+}
+
 function ScheduledIcon() {
   return (
     <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-accent-light">
-      <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+      <svg width="16" height="16" fill="none" stroke="#2F55D4" strokeWidth="2" viewBox="0 0 24 24">
         <circle cx="12" cy="12" r="10" />
         <polyline points="12 6 12 12 16 14" />
       </svg>
@@ -365,7 +444,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 
 function CalendarIcon() {
   return (
-    <svg width="16" height="16" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+    <svg width="16" height="16" fill="none" stroke="#2F55D4" strokeWidth="2" viewBox="0 0 24 24">
       <rect x="3" y="4" width="18" height="18" rx="2" />
       <line x1="16" y1="2" x2="16" y2="6" />
       <line x1="8" y1="2" x2="8" y2="6" />

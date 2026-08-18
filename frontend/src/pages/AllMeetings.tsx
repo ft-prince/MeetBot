@@ -7,7 +7,7 @@ import { fmtDate, fmtDuration, fmtTimeOfDay } from '../lib/format'
 import type { MeetingRow } from '../lib/types'
 
 type StatusFilter = '' | 'done' | 'processing'
-type SortKey = 'newest' | 'oldest' | 'longest' | 'shortest'
+type SortKey = 'newest' | 'oldest' | 'longest' | 'shortest' | 'title' | 'participants'
 type RangeKey = 'all' | '7d' | '30d' | '90d'
 
 function dateInRange(d: string, range: RangeKey): boolean {
@@ -21,8 +21,8 @@ function toCSV(rows: MeetingRow[]): string {
     const s = String(v ?? '')
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
   }
-  const head = ['id', 'meeting_code', 'title', 'started_at', 'ended_at', 'duration_ms', 'has_summary']
-  const body = rows.map(r => [r.id, r.meeting_code, r.title || '', r.started_at, r.ended_at || '', r.duration_ms || 0, r.has_summary].map(esc).join(','))
+  const head = ['id', 'meeting_code', 'title', 'started_at', 'ended_at', 'duration_ms', 'has_summary', 'participants']
+  const body = rows.map(r => [r.id, r.meeting_code, r.title || '', r.started_at, r.ended_at || '', r.duration_ms || 0, r.has_summary, (r.participants || []).join('; ')].map(esc).join(','))
   return [head.join(','), ...body].join('\n')
 }
 
@@ -54,15 +54,20 @@ export function AllMeetings() {
     let list = meetings.filter(m => m.ended_at)
     const q = query.toLowerCase().trim()
     if (q) list = list.filter(m =>
-      (m.meeting_code || '').toLowerCase().includes(q) || (m.title || '').toLowerCase().includes(q)
+      (m.meeting_code || '').toLowerCase().includes(q) ||
+      (m.title || '').toLowerCase().includes(q) ||
+      (m.participants || []).some(p => p.toLowerCase().includes(q))
     )
     if (status === 'done') list = list.filter(m => m.has_summary)
     if (status === 'processing') list = list.filter(m => !m.has_summary)
     if (range !== 'all') list = list.filter(m => dateInRange(m.started_at, range))
     const sorted = [...list]
+    const titleOf = (m: MeetingRow) => (m.title || m.meeting_code || '').toLowerCase()
     if (sort === 'oldest') sorted.sort((a, b) => +new Date(a.started_at) - +new Date(b.started_at))
     else if (sort === 'longest') sorted.sort((a, b) => (b.duration_ms || 0) - (a.duration_ms || 0))
     else if (sort === 'shortest') sorted.sort((a, b) => (a.duration_ms || 0) - (b.duration_ms || 0))
+    else if (sort === 'title') sorted.sort((a, b) => titleOf(a).localeCompare(titleOf(b)))
+    else if (sort === 'participants') sorted.sort((a, b) => (b.participants?.length || 0) - (a.participants?.length || 0))
     else sorted.sort((a, b) => +new Date(b.started_at) - +new Date(a.started_at))
     return sorted
   }, [meetings, query, status, range, sort])
@@ -81,10 +86,10 @@ export function AllMeetings() {
   }, [filtered])
 
   const exportCSV = () => {
-    download(`noteai-meetings-${new Date().toISOString().slice(0, 10)}.csv`, toCSV(filtered), 'text/csv')
+    download(`meetmaster-meetings-${new Date().toISOString().slice(0, 10)}.csv`, toCSV(filtered), 'text/csv')
   }
   const exportJSON = () => {
-    download(`noteai-meetings-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(filtered, null, 2), 'application/json')
+    download(`meetmaster-meetings-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(filtered, null, 2), 'application/json')
   }
 
   const hasFilters = !!query || !!status || range !== 'all' || sort !== 'newest'
@@ -106,7 +111,7 @@ export function AllMeetings() {
             type="search"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Search by title or meeting code…"
+            placeholder="Search by title, participant, or meeting code…"
             className="input flex-1 min-w-[200px] max-w-md"
           />
           <select value={range} onChange={e => setRange(e.target.value as RangeKey)} className="input w-auto cursor-pointer">
@@ -125,6 +130,8 @@ export function AllMeetings() {
             <option value="oldest">Oldest first</option>
             <option value="longest">Longest first</option>
             <option value="shortest">Shortest first</option>
+            <option value="title">Title (A–Z)</option>
+            <option value="participants">Most participants</option>
           </select>
           {hasFilters && (
             <button onClick={clearFilters} className="btn btn-secondary btn-sm">Clear</button>
@@ -159,6 +166,7 @@ export function AllMeetings() {
                     <Th>Meeting</Th>
                     <Th>Date &amp; Time</Th>
                     <Th>Duration</Th>
+                    <Th>Participants</Th>
                     <Th>Status</Th>
                     <Th>Actions</Th>
                   </tr>
@@ -167,14 +175,21 @@ export function AllMeetings() {
                   {filtered.map(m => (
                     <tr key={m.id} onClick={() => navigate('/meetings/' + m.id)} className="border-b border-gray-200 last:border-b-0 hover:bg-gray-50 cursor-pointer transition-colors">
                       <td className="px-4 py-3 align-middle">
-                        <span className="font-mono font-bold text-accent text-sm">{m.meeting_code}</span>
-                        {m.title && <div className="text-xs text-muted mt-0.5">{m.title}</div>}
+                        <span className="font-bold text-ink text-sm">{m.title || m.meeting_code}</span>
+                        <div className="text-xs text-muted mt-0.5 font-mono">{m.meeting_code}</div>
                       </td>
                       <td className="px-4 py-3 align-middle text-sm">
                         <span>{fmtDate(m.started_at)}</span>
                         <div className="text-xs text-muted">{fmtTimeOfDay(m.started_at)}</div>
                       </td>
                       <td className="px-4 py-3 align-middle text-sm text-muted">{fmtDuration(m.duration_ms)}</td>
+                      <td className="px-4 py-3 align-middle text-sm text-muted">
+                        {m.participants && m.participants.length > 0 ? (
+                          <span title={m.participants.join(', ')}>
+                            {m.participants.length} · <span className="text-xs">{m.participants.slice(0, 2).join(', ')}{m.participants.length > 2 ? '…' : ''}</span>
+                          </span>
+                        ) : '—'}
+                      </td>
                       <td className="px-4 py-3 align-middle">
                         <Pill variant={m.has_summary ? 'done' : 'pending'}>{m.has_summary ? 'Done' : 'Processing'}</Pill>
                       </td>
@@ -213,9 +228,12 @@ function MobileCard({ m, onClick }: { m: MeetingRow; onClick: () => void }) {
   return (
     <div onClick={onClick} className="card p-4 cursor-pointer hover:bg-gray-50 transition-colors flex items-center gap-3">
       <div className="flex-1 min-w-0">
-        <div className="font-mono font-bold text-accent text-sm">{m.meeting_code}</div>
-        {m.title && <div className="text-xs text-muted mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap">{m.title}</div>}
-        <div className="text-xs text-muted mt-1">{fmtDate(m.started_at)} · {fmtTimeOfDay(m.started_at)} · {fmtDuration(m.duration_ms)}</div>
+        <div className="font-bold text-ink text-sm overflow-hidden text-ellipsis whitespace-nowrap">{m.title || m.meeting_code}</div>
+        <div className="text-xs text-muted mt-0.5 font-mono">{m.meeting_code}</div>
+        <div className="text-xs text-muted mt-1">
+          {fmtDate(m.started_at)} · {fmtTimeOfDay(m.started_at)} · {fmtDuration(m.duration_ms)}
+          {m.participants && m.participants.length > 0 ? ` · ${m.participants.length} participant${m.participants.length === 1 ? '' : 's'}` : ''}
+        </div>
       </div>
       <Pill variant={m.has_summary ? 'done' : 'pending'}>{m.has_summary ? 'Done' : 'Processing'}</Pill>
     </div>

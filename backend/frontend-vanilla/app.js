@@ -98,7 +98,7 @@ function showPage(name, el) {
   if (el) el.classList.add('active')
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'))
   document.getElementById(`page-${name}`)?.classList.add('active')
-  const [title, sub] = PAGE_TITLES[name] || ['NoteAI', '']
+  const [title, sub] = PAGE_TITLES[name] || ['MeetMaster', '']
   document.getElementById('topbarTitle').textContent = title
   document.getElementById('topbarSub').textContent = sub
 
@@ -498,8 +498,7 @@ function renderCalendarEvents(events) {
   }
   if (!events||!events.length) {
     el.innerHTML=`
-      <div class="alert alert-info" style="margin-bottom:1rem">No upcoming Google Meet meetings found in the next 25 days.</div>
-      <button class="btn btn-primary btn-sm" onclick="syncCalendar()">🔄 Sync Calendar Now</button>`
+      <div class="alert alert-info" style="margin-bottom:1rem">No upcoming Google Meet meetings found in the next 25 days.</div>`
     return
   }
   el.innerHTML=`<div style="display:flex;flex-direction:column;gap:.75rem">${events.map(ev=>{

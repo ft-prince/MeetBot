@@ -5,6 +5,8 @@ import {
   getEmailThread,
   getThreadEmails,
   getSyncState,
+  getSyncDays,
+  normalizeSyncDays,
   searchEmails,
 } from '../services/emailService';
 import {
@@ -27,8 +29,14 @@ const router = Router();
 
 router.post('/sync', async (req: Request, res: Response) => {
   try {
-    const result = await syncEmails(req.session.userId!);
-    res.json({ success: true, ...result });
+    // `days` is optional; when present it becomes the user's stored window.
+    // Values are snapped to SYNC_WINDOW_OPTIONS, so a bad value narrows the
+    // sync rather than failing the request.
+    const raw = (req.body as { days?: unknown })?.days ?? req.query.days;
+    const days = raw == null ? undefined : normalizeSyncDays(raw);
+
+    const result = await syncEmails(req.session.userId!, { days });
+    res.json({ success: true, syncDays: days ?? await getSyncDays(req.session.userId!), ...result });
   } catch (err) {
     console.error('[email-api] sync error:', err);
     res.status(500).json({ error: 'Failed to sync emails' });
@@ -99,7 +107,12 @@ router.post('/threads/:id/analyze', async (req: Request, res: Response) => {
 router.post('/analyze-batch', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
-    const analyzed = await analyzeUnanalyzedThreads(req.session.userId!, limit);
+    // `all=true` is the explicit "re-analyze my whole mailbox" escape hatch —
+    // it has to be asked for, it is never the default.
+    const allTime = req.query.all === 'true';
+    const withinDays = req.query.days ? normalizeSyncDays(req.query.days) : undefined;
+
+    const analyzed = await analyzeUnanalyzedThreads(req.session.userId!, { limit, withinDays, allTime });
     res.json({ analyzed });
   } catch (err) {
     console.error('[email-api] batch analyze error:', err);

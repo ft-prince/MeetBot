@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Topbar } from '../components/Topbar'
 import { Toggle } from '../components/Toggle'
 import { useAuth } from '../context/AuthContext'
@@ -51,7 +52,7 @@ export function Profile() {
         <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 sm:gap-6 items-start">
           {/* User card */}
           <div className="card p-5 sm:p-7">
-            <div className="w-[72px] h-[72px] rounded-full bg-gradient-to-br from-accent to-amber-500 flex items-center justify-center text-white text-2xl font-bold mb-5 overflow-hidden">
+            <div className="w-[72px] h-[72px] rounded-full bg-gradient-to-br from-accent to-indigo-500 flex items-center justify-center text-white text-2xl font-bold mb-5 overflow-hidden">
               {user.picture ? <img src={user.picture} alt="" className="w-full h-full object-cover" /> : ini}
             </div>
             <div className="text-lg font-bold mb-1">{user.name}</div>
@@ -112,9 +113,84 @@ export function Profile() {
               </button>
             </div>
           </div>
+
+          <div className="lg:col-start-2">
+            <AccountData />
+          </div>
         </div>
       </div>
     </>
+  )
+}
+
+const DELETE_PHRASE = 'DELETE'
+
+/**
+ * Data export + account deletion. Legally required (GDPR/DPDP, and Google's
+ * verification review looks for it), and the deletion is genuinely irreversible —
+ * hence the typed confirmation rather than a window.confirm.
+ */
+function AccountData() {
+  const [confirm, setConfirm] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const remove = async () => {
+    setDeleting(true)
+    setError(null)
+    try {
+      await api.deleteAccount()
+      window.location.href = '/signin'
+    } catch (err) {
+      setError((err as Error).message)
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="px-5 py-3.5 border-b border-gray-200 bg-app-bg font-bold text-sm">Your data</div>
+
+      <div className="p-5 flex items-center justify-between gap-4 flex-wrap border-b border-gray-200">
+        <div>
+          <div className="text-sm font-semibold mb-0.5">Export everything</div>
+          <p className="text-xs text-muted">
+            Meetings, transcripts, summaries, and synced email data as one JSON file.
+          </p>
+        </div>
+        {/* A plain link, not fetch(): the browser handles the download and the
+            session cookie rides along. */}
+        <a href="/api/account/export" className="btn btn-secondary btn-sm">Download</a>
+      </div>
+
+      <div className="p-5">
+        <div className="text-sm font-semibold mb-0.5 text-danger">Delete account</div>
+        <p className="text-xs text-muted mb-3">
+          Permanently deletes your account, meetings, transcripts, summaries, and synced email data.
+          This cannot be undone.
+        </p>
+        {error && <p className="text-xs text-danger mb-2">{error}</p>}
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            value={confirm}
+            onChange={e => setConfirm(e.target.value)}
+            placeholder={`Type ${DELETE_PHRASE} to confirm`}
+            className="input text-xs w-52"
+          />
+          <button
+            onClick={remove}
+            disabled={confirm !== DELETE_PHRASE || deleting}
+            className="btn btn-danger btn-sm disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {deleting ? 'Deleting…' : 'Delete my account'}
+          </button>
+        </div>
+        <div className="flex gap-3 text-xs text-muted mt-4 pt-4 border-t border-gray-200">
+          <Link to="/terms" className="hover:text-accent">Terms of Service</Link>
+          <Link to="/privacy" className="hover:text-accent">Privacy Policy</Link>
+        </div>
+      </div>
+    </div>
   )
 }
 

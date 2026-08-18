@@ -1,7 +1,7 @@
 import type {
   CalendarEvent, MeetingRow, MeetingSummary, ScheduledMeeting, ScheduleInput, TranscriptSegment, User,
   EmailThread, EmailMessage, EmailAnalysis, EmailActionItem, EmailFollowUp, EmailSyncState, EmailDailyBrief,
-  AnalysisProgress,
+  AnalysisProgress, AdminStats, AdminUser, AdminTimeseries, AdminUserDetail, PlanId,
 } from './types'
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -24,15 +24,36 @@ export const api = {
       body: JSON.stringify({ autoJoinMinutes }),
     }),
 
+  // Account — export is a plain <a href> so the browser downloads it
+  deleteAccount: () => req<{ ok: true }>('/api/account', { method: 'DELETE' }),
+
+  // Admin (403 unless users.is_admin)
+  adminStats: () => req<AdminStats>('/api/admin/stats'),
+  adminUsers: (q = '') => req<{ users: AdminUser[] }>(`/api/admin/users?q=${encodeURIComponent(q)}`),
+  adminTimeseries: (days = 30) => req<AdminTimeseries>(`/api/admin/timeseries?days=${days}`),
+  adminUser: (id: string) => req<AdminUserDetail>(`/api/admin/users/${id}`),
+  adminSetPlan: (id: string, plan: PlanId, planUntil?: string | null) =>
+    req<{ ok: true }>(`/api/admin/users/${id}/plan`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan, planUntil: planUntil || null }),
+    }),
+
   // Meetings
   listMeetings: () => req<{ meetings: MeetingRow[] }>('/api/meetings'),
   getTranscript: (id: string) => req<{ segments: TranscriptSegment[] }>(`/api/meetings/${id}/transcript`),
   getSummary: (id: string) => req<MeetingSummary>(`/api/meetings/${id}/summary`),
-  joinMeeting: (meetingUrl: string) =>
+  joinMeeting: (meetingUrl: string, title?: string) =>
     req<{ meetingId: string }>('/api/meetings/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ meetingUrl }),
+      body: JSON.stringify({ meetingUrl, title }),
+    }),
+  updateMeetingTitle: (id: string, title: string) =>
+    req<{ title: string }>(`/api/meetings/${id}/title`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
     }),
   stopMeeting: (code: string) =>
     fetch(`/api/meetings/${code}/stop`, { method: 'POST', credentials: 'include' }),
@@ -66,15 +87,18 @@ export const api = {
 
   // Support
   submitSupport: (issueType: string, message: string) =>
-    req<{ ok: true }>('/api/support', {
+    req<{ ok: true; delivered: boolean }>('/api/support', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ issueType, message }),
     }),
 
   // Emails
-  syncEmails: () =>
-    req<{ success: boolean; threadsProcessed: number; messagesProcessed: number }>('/api/emails/sync', { method: 'POST' }),
+  syncEmails: (days?: number) =>
+    req<{ success: boolean; syncDays: number; threadsProcessed: number; messagesProcessed: number }>(
+      '/api/emails/sync',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days }) },
+    ),
   emailSyncStatus: () =>
     req<{ syncState: EmailSyncState | null }>('/api/emails/sync/status'),
   listEmailThreads: (opts?: { limit?: number; offset?: number; search?: string; unread?: boolean }) => {
@@ -90,8 +114,13 @@ export const api = {
     req<{ thread: EmailThread; emails: EmailMessage[]; analysis: EmailAnalysis | null }>(`/api/emails/threads/${id}`),
   analyzeEmailThread: (id: string) =>
     req<{ analysis: EmailAnalysis }>(`/api/emails/threads/${id}/analyze`, { method: 'POST' }),
-  batchAnalyzeEmails: (limit = 20) =>
-    req<{ analyzed: number }>(`/api/emails/analyze-batch?limit=${limit}`, { method: 'POST' }),
+  // Defaults to the user's sync window. `allTime` re-analyzes everything ever
+  // synced — only pass it when the user explicitly asks for a full re-analysis.
+  batchAnalyzeEmails: (limit = 20, allTime = false) =>
+    req<{ analyzed: number }>(
+      `/api/emails/analyze-batch?limit=${limit}${allTime ? '&all=true' : ''}`,
+      { method: 'POST' },
+    ),
   getAnalysisProgress: () =>
     req<AnalysisProgress>('/api/emails/analyze-progress'),
   detectFollowUps: (days = 3) =>

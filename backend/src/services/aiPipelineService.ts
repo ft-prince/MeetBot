@@ -45,6 +45,12 @@ export interface SpeakerInsight {
   collaboration: string[];
 }
 
+export interface QAPair {
+  question: string;
+  answer: string | null;   // null = asked but never answered
+  askedBy: string | null;
+}
+
 export type ModuleStatus = 'ok' | 'partial' | 'failed' | 'skipped';
 
 export interface ProcessingStatus {
@@ -67,12 +73,25 @@ export interface PipelineResult {
   keyQuestions: string[];
   chapters: Chapter[];
   speakerInsights: SpeakerInsight[];
+  // Comprehensive-summary fields — everything a non-attendee needs.
+  meetingObjective: string;
+  discussionPoints: string[];
+  decisions: string[];
+  risks: string[];
+  followUps: string[];
+  nextMeeting: string | null;
+  outcome: string;
+  qaPairs: QAPair[];
   status: ProcessingStatus;
 }
 
 // ─── Constants (only safety bounds — no output-shape limits) ─────────────────
 
-const MODEL = 'llama-3.1-8b-instant';
+// Groq decommissions models without notice — llama-3.1-8b-instant started
+// returning 404 and silently failed every module that needs JSON output.
+// Override with GROQ_MODEL when Groq retires this one; check the live list at
+// GET /openai/v1/models before picking a replacement (JSON mode is required).
+const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
 // Groq TPM bound. Devanagari/CJK ≈ 2-3x tokens/char, so this is conservative.
 const MAX_TRANSCRIPT_CHARS_PER_CALL = 12_000;
@@ -109,6 +128,53 @@ function transcriptToText(segments: PipelineSegment[]): string {
 
 function uniqueSpeakers(segments: PipelineSegment[]): string[] {
   return [...new Set(segments.map(s => s.speakerName || s.speakerLabel || 'Unknown'))];
+}
+
+// Fit a newline-joined transcript into a char budget for a single LLM call.
+// Crucially, when it's too long we DON'T just keep the head (which would make
+// action-items/questions/chapters/speaker-insights ignore everything after the
+// first ~10 minutes of a long meeting). Instead we keep lines sampled EVENLY
+// across the whole meeting — plus the first and last line — so every module sees
+// content spanning start→end. Line timestamps are preserved, so chapters still
+// map to real times.
+function condenseToBudget(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const lines = text.split('\n');
+  if (lines.length <= 2) return text.slice(0, maxChars);
+
+  const avgLen = text.length / lines.length;
+  // 10% headroom so the joined sample fits WITHOUT a tail-chopping slice (which
+  // would defeat the point by dropping the meeting's ending).
+  let keep = Math.max(2, Math.floor((maxChars * 0.9) / Math.max(avgLen, 1)));
+  if (keep >= lines.length) return text.slice(0, maxChars);
+
+  const sampleIndices = (count: number): number[] => {
+    const idxs: number[] = [];
+    const seen = new Set<number>();
+    const step = (lines.length - 1) / (count - 1); // spread first..last inclusive
+    for (let k = 0; k < count; k++) {
+      const idx = Math.min(lines.length - 1, Math.round(k * step));
+      if (!seen.has(idx)) { seen.add(idx); idxs.push(idx); }
+    }
+    // Guarantee first and last are present.
+    if (!seen.has(0)) idxs.unshift(0);
+    if (!seen.has(lines.length - 1)) idxs.push(lines.length - 1);
+    return idxs;
+  };
+
+  // Shrink until the joined result fits the budget; first & last always kept.
+  let picked = sampleIndices(keep).map(i => lines[i]);
+  while (picked.join('\n').length > maxChars && keep > 2) {
+    keep = Math.max(2, Math.floor(keep * 0.85));
+    picked = sampleIndices(keep).map(i => lines[i]);
+  }
+  const out = picked.join('\n');
+  // Absolute last-resort guard (2 huge lines): keep head + tail, drop the middle.
+  if (out.length > maxChars) {
+    const half = Math.floor(maxChars / 2) - 1;
+    return out.slice(0, half) + '\n' + out.slice(out.length - half);
+  }
+  return out;
 }
 
 function tryParseJSON<T>(raw: string): T | null {
@@ -160,13 +226,21 @@ async function groqJSON<T>(
   prompt: string,
   opts: { model?: string; maxTokens?: number; temperature?: number } = {},
 ): Promise<T> {
+  const model = opts.model ?? MODEL;
+  // gpt-oss spends the SAME completion budget on its reasoning trace before it
+  // emits any content. On a long transcript that exhausts max_tokens mid-thought
+  // and Groq rejects the call with json_validate_failed + an empty generation.
+  // Low effort keeps the budget for the answer. Only gpt-oss accepts this param.
+  const reasoning = model.startsWith('openai/gpt-oss') ? { reasoning_effort: 'low' as const } : {};
+
   return withRetry(label, async () => {
     const response = await getGroq().chat.completions.create({
-      model: opts.model ?? MODEL,
+      model,
       messages: [{ role: 'user', content: prompt }],
       temperature: opts.temperature ?? 0.3,
       max_tokens: opts.maxTokens ?? 2500,
       response_format: { type: 'json_object' },
+      ...reasoning,
     });
     const raw = response.choices[0]?.message?.content?.trim() ?? '';
     const parsed = tryParseJSON<T>(raw);
@@ -215,6 +289,13 @@ interface SummaryStructured {
   summary?: string;
   key_insights?: string[];
   important_points?: string[];
+  meeting_objective?: string;
+  discussion_points?: string[];
+  decisions?: string[];
+  risks_blockers?: string[];
+  follow_ups?: string[];
+  next_meeting?: string | null;
+  outcome?: string;
 }
 
 function langHintFor(language: string | null): string {
@@ -226,39 +307,53 @@ function langHintFor(language: string | null): string {
 async function summarizeChunk(chunk: string, language: string | null): Promise<SummaryStructured> {
   return groqJSON<SummaryStructured>(
     'summary-chunk',
-    `You are a meeting intelligence assistant. ${langHintFor(language)}
+    `You are a meeting intelligence assistant. Your output must be detailed enough that someone who did NOT attend understands everything important without reading the transcript. ${langHintFor(language)}
 
 Transcript chunk:
 ${chunk}
 
 Return ONLY valid JSON with these exact keys:
 {
+  "summary": "executive summary: 2-4 substantial paragraphs separated by \\n\\n — what the meeting was about, what was discussed, what was decided, and where things stand now",
   "detailed_rewrite": "narrative rewrite covering everything important — length should match the content",
-  "summary": " executive summary — as long or short as the content warrants",
+  "meeting_objective": "one or two sentences: why this meeting happened / what it set out to achieve",
+  "discussion_points": ["each key topic that was discussed, with enough detail to be understood standalone"],
   "key_insights": ["each insight is an actionable decision, takeaway, or commitment"],
-  "important_points": ["each point is a key fact, deadline, number, or named decision"]
+  "important_points": ["each point is a key fact, deadline, number, or named decision"],
+  "decisions": ["each concrete decision that was made, including who made it if identifiable"],
+  "risks_blockers": ["each risk, blocker, or concern raised"],
+  "follow_ups": ["each follow-up item or topic deferred to later"],
+  "next_meeting": "date/time/plan for the next meeting if one was mentioned, else null",
+  "outcome": "one or two sentences: the overall outcome of the meeting"
 }
 
-Do not invent content. Scale each list to what the transcript supports.`,
-    { maxTokens: 2500 },
+Do not invent content. Scale each list to what the transcript supports; use [] or null when the transcript has nothing for a field.`,
+    { maxTokens: 4000 },
   );
 }
 
 async function mergeSummaries(parts: SummaryStructured[], language: string | null): Promise<SummaryStructured> {
   if (parts.length === 1) return parts[0];
   const joined = parts.map((p, i) => `--- Chunk ${i + 1} ---
+Objective: ${p.meeting_objective || ''}
 Summary: ${p.summary || ''}
+Discussion: ${(p.discussion_points || []).join(' | ')}
 Insights: ${(p.key_insights || []).join(' | ')}
-Points: ${(p.important_points || []).join(' | ')}`).join('\n\n');
+Points: ${(p.important_points || []).join(' | ')}
+Decisions: ${(p.decisions || []).join(' | ')}
+Risks/Blockers: ${(p.risks_blockers || []).join(' | ')}
+Follow-ups: ${(p.follow_ups || []).join(' | ')}
+Next meeting: ${p.next_meeting || ''}
+Outcome: ${p.outcome || ''}`).join('\n\n');
   return groqJSON<SummaryStructured>(
     'summary-merge',
-    `Merge these per-chunk meeting summaries into one cohesive output. Deduplicate, group related items, preserve all unique facts. ${langHintFor(language)}
+    `Merge these per-chunk meeting summaries into one cohesive output. Deduplicate, group related items, preserve all unique facts. The merged "summary" must be a 2-4 paragraph executive summary (paragraphs separated by \\n\\n) detailed enough for someone who did not attend. ${langHintFor(language)}
 
 ${joined}
 
 Return ONLY JSON with these keys:
-{"detailed_rewrite":"...","summary":"...","key_insights":[...],"important_points":[...]}`,
-    { maxTokens: 2500 },
+{"summary":"...","detailed_rewrite":"...","meeting_objective":"...","discussion_points":[...],"key_insights":[...],"important_points":[...],"decisions":[...],"risks_blockers":[...],"follow_ups":[...],"next_meeting":"... or null","outcome":"..."}`,
+    { maxTokens: 4000 },
   );
 }
 
@@ -304,10 +399,17 @@ async function runSummaryModule(
     if (merged) return { result: merged, status: parts.length === chunks.length ? 'ok' : 'partial' };
     return {
       result: {
-        summary: parts.map(p => p.summary).filter(Boolean).join(' '),
+        summary: parts.map(p => p.summary).filter(Boolean).join('\n\n'),
         detailed_rewrite: parts.map(p => p.detailed_rewrite).filter(Boolean).join('\n\n'),
         key_insights: parts.flatMap(p => p.key_insights || []),
         important_points: parts.flatMap(p => p.important_points || []),
+        meeting_objective: parts.map(p => p.meeting_objective).filter(Boolean)[0] || '',
+        discussion_points: parts.flatMap(p => p.discussion_points || []),
+        decisions: parts.flatMap(p => p.decisions || []),
+        risks_blockers: parts.flatMap(p => p.risks_blockers || []),
+        follow_ups: parts.flatMap(p => p.follow_ups || []),
+        next_meeting: parts.map(p => p.next_meeting).filter(Boolean)[0] || null,
+        outcome: parts.map(p => p.outcome).filter(Boolean).slice(-1)[0] || '',
       },
       status: 'partial',
     };
@@ -315,7 +417,7 @@ async function runSummaryModule(
     console.warn(`[ai] summary primary failed: ${(err as Error).message} — falling back to single-shot`);
   }
   try {
-    const trimmed = transcript.slice(0, MAX_TRANSCRIPT_CHARS_PER_CALL);
+    const trimmed = condenseToBudget(transcript, MAX_TRANSCRIPT_CHARS_PER_CALL);
     return { result: await summarizeChunk(trimmed, language), status: 'partial' };
   } catch (err) {
     console.warn(`[ai] summary fallback failed: ${(err as Error).message} — keyword extraction`);
@@ -332,7 +434,7 @@ async function runActionItemsModule(
   language: string | null,
 ): Promise<{ result: ActionItem[]; status: ModuleStatus }> {
   if (!config.groq.apiKey) return { result: [], status: 'skipped' };
-  const slice = transcript.slice(0, MAX_TRANSCRIPT_CHARS_PER_CALL);
+  const slice = condenseToBudget(transcript, MAX_TRANSCRIPT_CHARS_PER_CALL);
   try {
     const parsed = await groqJSON<{ action_items?: ActionItemRaw[] }>(
       'action-items',
@@ -343,7 +445,7 @@ ${slice}
 
 Return ONLY JSON:
 {"action_items":[{"task":"...","owner":"name or null","due":"deadline hint or null"}]}`,
-      { maxTokens: 1800 },
+      { maxTokens: 3000 },
     );
     const items = (parsed.action_items || [])
       .filter(a => a?.task && typeof a.task === 'string' && a.task.trim().length > 0)
@@ -359,29 +461,38 @@ Return ONLY JSON:
   }
 }
 
-// ─── Module: key questions ───────────────────────────────────────────────────
+// ─── Module: questions & answers ─────────────────────────────────────────────
 
-async function runKeyQuestionsModule(
+interface QAPairRaw { question?: string; answer?: string | null; asked_by?: string | null }
+
+async function runQuestionsModule(
   transcript: string,
   language: string | null,
-): Promise<{ result: string[]; status: ModuleStatus }> {
+): Promise<{ result: QAPair[]; status: ModuleStatus }> {
   if (!config.groq.apiKey) return { result: [], status: 'skipped' };
-  const slice = transcript.slice(0, MAX_TRANSCRIPT_CHARS_PER_CALL);
+  const slice = condenseToBudget(transcript, MAX_TRANSCRIPT_CHARS_PER_CALL);
   try {
-    const parsed = await groqJSON<{ questions?: string[] }>(
-      'key-questions',
-      `Extract the open questions raised in this meeting — things that were asked but not fully resolved, decisions pending, or topics flagged for follow-up. ${langHintFor(language)}
+    const parsed = await groqJSON<{ questions?: QAPairRaw[] }>(
+      'questions-answers',
+      `Extract the significant questions raised in this meeting. For each question, capture the answer that was given (paraphrased, faithful to the transcript) — or null if it was left unresolved. Also capture who asked, when identifiable. Include both answered and unanswered questions. ${langHintFor(language)}
 
 Transcript:
 ${slice}
 
-Return ONLY JSON: {"questions":["..."]}`,
-      { maxTokens: 1200 },
+Return ONLY JSON:
+{"questions":[{"question":"...","answer":"the answer given, or null if unresolved","asked_by":"name or null"}]}`,
+      { maxTokens: 3000 },
     );
-    const items = (parsed.questions || []).filter(q => typeof q === 'string' && q.trim().length > 0).map(q => q.trim());
+    const items = (parsed.questions || [])
+      .filter(q => q?.question && typeof q.question === 'string' && q.question.trim().length > 0)
+      .map(q => ({
+        question: q.question!.trim(),
+        answer: q.answer && typeof q.answer === 'string' && q.answer.trim() ? q.answer.trim() : null,
+        askedBy: q.asked_by && typeof q.asked_by === 'string' ? q.asked_by.trim() : null,
+      }));
     return { result: items, status: 'ok' };
   } catch (err) {
-    console.warn(`[ai] key-questions failed: ${(err as Error).message}`);
+    console.warn(`[ai] questions-answers failed: ${(err as Error).message}`);
     return { result: [], status: 'failed' };
   }
 }
@@ -395,10 +506,12 @@ async function runChaptersModule(
   language: string | null,
 ): Promise<{ result: Chapter[]; status: ModuleStatus }> {
   if (!config.groq.apiKey || segments.length < 6) return { result: [], status: 'skipped' };
-  const timed = segments
-    .map(s => `[${formatTime(s.startMs)}|${s.startMs}] ${s.speakerName || s.speakerLabel || '?'}: ${s.text}`)
-    .join('\n')
-    .slice(0, MAX_TRANSCRIPT_CHARS_PER_CALL);
+  const timed = condenseToBudget(
+    segments
+      .map(s => `[${formatTime(s.startMs)}|${s.startMs}] ${s.speakerName || s.speakerLabel || '?'}: ${s.text}`)
+      .join('\n'),
+    MAX_TRANSCRIPT_CHARS_PER_CALL,
+  );
   try {
     const parsed = await groqJSON<{ chapters?: ChapterRaw[] }>(
       'chapters',
@@ -409,7 +522,7 @@ ${timed}
 
 Return ONLY JSON:
 {"chapters":[{"title":"...","start_ms":<number>,"end_ms":<number>,"summary":"one-line topic summary"}]}`,
-      { maxTokens: 2000 },
+      { maxTokens: 3000 },
     );
     const items = (parsed.chapters || [])
       .filter(c => c?.title && typeof c.start_ms === 'number' && typeof c.end_ms === 'number')
@@ -443,7 +556,7 @@ async function runSpeakerInsightsModule(
   const speakers = uniqueSpeakers(segments);
   if (!config.groq.apiKey || speakers.length === 0) return { result: [], status: 'skipped' };
 
-  const transcript = transcriptToText(segments).slice(0, MAX_TRANSCRIPT_CHARS_PER_CALL);
+  const transcript = condenseToBudget(transcriptToText(segments), MAX_TRANSCRIPT_CHARS_PER_CALL);
   const speakerList = speakers.join(', ');
 
   try {
@@ -496,6 +609,14 @@ export async function runPipeline(
     keyQuestions: [],
     chapters: [],
     speakerInsights: [],
+    meetingObjective: '',
+    discussionPoints: [],
+    decisions: [],
+    risks: [],
+    followUps: [],
+    nextMeeting: null,
+    outcome: '',
+    qaPairs: [],
     status: {},
   };
 
@@ -514,23 +635,37 @@ export async function runPipeline(
   await sleep(PAUSE_MS);
   const actions   = await runActionItemsModule(transcript, language);
   await sleep(PAUSE_MS);
-  const questions = await runKeyQuestionsModule(transcript, language);
+  const questions = await runQuestionsModule(transcript, language);
   await sleep(PAUSE_MS);
   const chapters  = await runChaptersModule(segments, language);
   await sleep(PAUSE_MS);
   const speakers  = await runSpeakerInsightsModule(segments, language);
+
+  const strList = (xs?: (string | null | undefined)[]) =>
+    (xs || []).filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map(x => x.trim());
 
   const sumPayload = summary.result;
   return {
     language,
     summary: (sumPayload.summary || '').trim(),
     detailedRewrite: (sumPayload.detailed_rewrite || '').trim(),
-    keyInsights: (sumPayload.key_insights || []).filter(x => typeof x === 'string' && x.trim()),
-    importantPoints: (sumPayload.important_points || []).filter(x => typeof x === 'string' && x.trim()),
+    keyInsights: strList(sumPayload.key_insights),
+    importantPoints: strList(sumPayload.important_points),
     actionItems: actions.result,
-    keyQuestions: questions.result,
+    // Backwards-compatible: keyQuestions remains the list of OPEN questions.
+    keyQuestions: questions.result.filter(q => !q.answer).map(q => q.question),
     chapters: chapters.result,
     speakerInsights: speakers.result,
+    meetingObjective: (sumPayload.meeting_objective || '').trim(),
+    discussionPoints: strList(sumPayload.discussion_points),
+    decisions: strList(sumPayload.decisions),
+    risks: strList(sumPayload.risks_blockers),
+    followUps: strList(sumPayload.follow_ups),
+    nextMeeting: (typeof sumPayload.next_meeting === 'string' && sumPayload.next_meeting.trim()
+      && !/^(null|none|n\/a)$/i.test(sumPayload.next_meeting.trim()))
+      ? sumPayload.next_meeting.trim() : null,
+    outcome: (sumPayload.outcome || '').trim(),
+    qaPairs: questions.result,
     status: {
       language: language ? 'ok' : 'failed',
       summary: summary.status,

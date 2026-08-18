@@ -41,13 +41,15 @@ test('extractMeetingId still resolves Meet and Zoom ids (no regression)', () => 
   assert.equal(extractMeetingId('https://us05web.zoom.us/wc/join/89012345678'), 'zoom-89012345678')
 })
 
-test('extractMeetingId falls back to a timestamped id for an unparseable Teams link', () => {
+test('extractMeetingId falls back to a URL-derived id for an unparseable Teams link', () => {
   // Arrange — a Teams host but no recognizable meeting id in the path
   const url = 'https://teams.microsoft.com/_#/conversations'
 
   // Act
   const id = extractMeetingId(url)
 
-  // Assert
-  assert.ok(/^teams-\d+$/.test(id), 'uses the teams- timestamp fallback')
+  // Assert — stable, not timestamped: a fresh id per launch would defeat the
+  // duplicate-bot guard and stop()/exit() lookups by meeting id.
+  assert.ok(/^teams-[0-9a-f]{16}$/.test(id), 'uses the teams- URL-hash fallback')
+  assert.equal(id, extractMeetingId(url), 'same URL always yields the same id')
 })

@@ -280,6 +280,10 @@
   setInterval(pollRtcCooccurrence, 300)
 
   // ── DOM active-speaker → speaker_start / speaker_end ──────────────────────
+  // Screen-share pseudo-tiles ("X's screen", "screen share content") must never
+  // be treated as a speaking participant — otherwise starting a share swaps the
+  // active speaker (and every transcript segment) to a non-person.
+  const PSEUDO_NAME_RE = /(presentation|is presenting|is sharing|screen share|screenshar|shared screen|'s screen|\bscreen\b\s*$)/i
   function cleanName (raw) {
     let name = (raw || '').trim()
     name = name.replace(/,\s*(unmuted|muted|speaking|host|co-host|guest).*$/i, '').trim()
@@ -288,6 +292,7 @@
       if (name.slice(0, half) === name.slice(half)) name = name.slice(0, half)
     }
     if (!name || name.length < 2 || /^note|recorder/i.test(name)) return null
+    if (PSEUDO_NAME_RE.test(name)) return null
     return name
   }
 
@@ -324,8 +329,49 @@
     lastSpeaker = name
   }
 
+  // ── Screen-share detection ────────────────────────────────────────────────
+  // Zoom shows "You are viewing <name>'s screen" (or "<name> is sharing") while
+  // a share is active, and renders a distinctive sharing container. Emit the
+  // same screenshare_start/update/end events the Meet injector produces so the
+  // backend persists them and speaker attribution stays presentation-aware.
+  let shareState = 'inactive'
+  let sharePresenter = null
+
+  function detectZoomShare () {
+    try {
+      const container = document.querySelector(
+        '[class*="sharee-container"], [class*="share-container"], [class*="sharing-layout"]'
+      )
+      const txt = (document.body.innerText || '').slice(0, 5000)
+      const m = txt.match(/(?:you are viewing\s+)?(.{2,60}?)(?:'s)? (?:screen|is sharing)/i)
+      const presenter = m ? cleanName(m[1].replace(/^you are viewing\s*/i, '')) : null
+      return { active: Boolean(container) || /is sharing|'s screen/i.test(txt), presenter }
+    } catch { return { active: false, presenter: null } }
+  }
+
+  function pollScreenShare () {
+    const { active, presenter } = detectZoomShare()
+    const state = active ? 'active' : 'inactive'
+    if (state !== shareState) {
+      shareState = state
+      sharePresenter = presenter
+      if (state === 'active') {
+        sendEvent({ type: 'screenshare_start', presenter, startMs: Date.now() })
+        console.log('[NoteAI] screen-share STARTED', presenter ? 'by ' + presenter : '')
+      } else {
+        sendEvent({ type: 'screenshare_end', presenter: sharePresenter, endMs: Date.now() })
+        sharePresenter = null
+        console.log('[NoteAI] screen-share ENDED')
+      }
+    } else if (state === 'active' && presenter && presenter !== sharePresenter) {
+      sharePresenter = presenter
+      sendEvent({ type: 'screenshare_update', presenter, ms: Date.now() })
+    }
+  }
+
   setTimeout(function () {
     console.log('[NoteAI] Zoom speaker polling started')
     setInterval(pollActiveSpeaker, 300)
+    setInterval(pollScreenShare, 1000)
   }, 5000)
 })()

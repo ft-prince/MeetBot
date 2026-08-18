@@ -51,11 +51,14 @@ export async function syncCalendar(userId: string): Promise<CalendarEvent[]> {
       name: a.displayName,
     }));
 
-    // Upsert into calendar_events — preserve auto_join if already set
+    // Upsert into calendar_events. Newly synced events default to auto_join = true
+    // so the bot joins upcoming meetings without the user flipping each toggle.
+    // auto_join is deliberately omitted from the DO UPDATE SET below, so a user's
+    // explicit per-event choice (e.g. turning a meeting OFF) survives re-syncs.
     const result = await db.query(
       `INSERT INTO calendar_events
-         (id, user_id, google_event_id, title, meet_url, start_time, end_time, attendees, synced_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+         (id, user_id, google_event_id, title, meet_url, start_time, end_time, attendees, auto_join, synced_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, now())
        ON CONFLICT (user_id, google_event_id) DO UPDATE SET
          title      = EXCLUDED.title,
          meet_url   = EXCLUDED.meet_url,
@@ -131,8 +134,9 @@ export async function getEventsToAutoJoin(): Promise<
   }));
 }
 
-/** Link a calendar event to a launched meeting */
-export async function linkMeeting(calendarEventId: string, meetingId: string): Promise<void> {
+/** Link a calendar event to a launched meeting (by DB UUID). No-op if null. */
+export async function linkMeeting(calendarEventId: string, meetingId: string | null): Promise<void> {
+  if (!meetingId) return;
   await db.query(
     `UPDATE calendar_events SET meeting_id = $1 WHERE id = $2`,
     [meetingId, calendarEventId]

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getAuthUrl, exchangeCode, getUserById } from '../services/googleAuth';
+import { getUsage } from '../services/planService';
 
 const router = Router();
 
@@ -76,6 +77,7 @@ router.get('/me', async (req: Request, res: Response) => {
   try {
     const user = await getUserById(req.session.userId);
     if (!user) { req.session.destroy(() => {}); res.status(401).json({ user: null }); return; }
+    const usage = await getUsage(user.id);
     res.json({
       user: {
         id: user.id,
@@ -83,6 +85,8 @@ router.get('/me', async (req: Request, res: Response) => {
         name: user.name,
         picture: user.picture,
         autoJoinMinutes: user.autoJoinMinutes,
+        isAdmin: user.isAdmin === true,
+        usage,
       },
     });
   } catch (err) {

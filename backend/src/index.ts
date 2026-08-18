@@ -6,7 +6,7 @@ import connectPgSimple from 'connect-pg-simple';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import { config } from './config';
-import { db, dbReady } from './db/client';
+import { db, dbReady, ensureSchema } from './db/client';
 import { handleConnection } from './ws/ingestHandler';
 import apiRouter from './routes/api';
 import authRouter, { handleGoogleCallback } from './routes/auth';
@@ -14,7 +14,10 @@ import calendarRouter from './routes/calendar';
 import supportRouter from './routes/support';
 import recallWebhookRouter from './routes/recallWebhook';
 import emailRouter from './routes/email';
+import adminRouter from './routes/admin';
+import accountRouter from './routes/account';
 import { startScheduler } from './services/schedulerService';
+import { startSttSidecar } from './services/sttSidecar';
 // session type augmentation — loaded via tsconfig includes
 
 const PgSession = connectPgSimple(session);
@@ -23,6 +26,9 @@ async function main() {
   try {
     await dbReady();
     console.log('[startup] Database connected');
+    // Auto-apply the schema if core tables are missing, so transcript writes
+    // can never silently fail against an unmigrated database.
+    await ensureSchema();
   } catch (err) {
     console.warn('[startup] Database not available:', (err as Error).message);
     console.warn('[startup] Continuing without DB — transcripts will not be persisted');
@@ -63,6 +69,8 @@ async function main() {
   app.use('/api/support', supportRouter);
   app.use('/recall', recallWebhookRouter);
   app.use('/api/emails', emailRouter);
+  app.use('/api/admin', adminRouter);
+  app.use('/api/account', accountRouter);
 
   // Serve the React UI build (frontend/dist). Falls back to the legacy vanilla
   // frontend if the React build hasn't been produced yet.
@@ -92,7 +100,11 @@ async function main() {
     console.log(`[startup]   Panel stream : ws://localhost:${config.port}/panel?meetingId=<id>`);
   });
 
-  // Start auto-join scheduler (checks every 60s for upcoming calendar meetings)
+  // Auto-start the local STT sidecar (aikosh/whisper) so a fresh `npm run dev`
+  // transcribes with no manual step. Skipped for cloud engines / or if already up.
+  startSttSidecar().catch(err => console.error('[startup] STT sidecar start error:', err));
+
+  // Start auto-join scheduler (checks every 60s for upcoming calendar meetings).
   startScheduler();
 }
 

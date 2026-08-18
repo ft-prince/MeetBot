@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { LiveSegment, SpeakerColor, WSMessage } from '../lib/types'
 import { SPEAKER_COLORS } from '../lib/colors'
+import { useAuth } from '../context/AuthContext'
 
 export type LiveStatus = 'connecting' | 'joining' | 'live' | 'ended' | 'error'
 
@@ -8,6 +9,8 @@ export interface LiveMeeting {
   id: string
   /** DB UUID — populated from the meeting.ended WS event */
   dbId?: string
+  /** Human-friendly meeting title (falls back to the code in the UI when absent) */
+  title?: string
   status: LiveStatus
   statusText: string
   segments: LiveSegment[]
@@ -18,13 +21,14 @@ export interface LiveMeeting {
 
 interface Store {
   meetings: Map<string, LiveMeeting>
-  start: (id: string) => void
+  start: (id: string, title?: string) => void
   stop: (id: string) => Promise<string | null>
 }
 
 const Ctx = createContext<Store | null>(null)
 
 export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth()
   const [meetings, setMeetings] = useState<Map<string, LiveMeeting>>(new Map())
   const wsRef = useRef<Map<string, WebSocket>>(new Map())
   const colorIdxRef = useRef<Map<string, number>>(new Map())
@@ -84,12 +88,22 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
     setTimeout(() => pollSummary(meetingCode, dbId, attempts + 1), 6000)
   }, [update])
 
-  const start = useCallback((id: string) => {
+  const start = useCallback((id: string, title?: string) => {
+    // Guard against duplicate connections: the periodic /api/bots/active poll
+    // (and React strict-mode double-invoke) can call start() repeatedly for the
+    // same meeting. Without this we'd open a second WebSocket and leak the first.
+    // A later call carrying a title still fills it in if it wasn't known before.
+    if (wsRef.current.has(id)) {
+      if (title) update(id, prev => (prev.title ? prev : { ...prev, title }))
+      return
+    }
+
     setMeetings(prev => {
       if (prev.has(id)) return prev
       const next = new Map(prev)
       next.set(id, {
         id,
+        title,
         status: 'connecting',
         statusText: 'Bot joining…',
         segments: [],
@@ -199,17 +213,41 @@ export function LiveMeetingsProvider({ children }: { children: ReactNode }) {
     return dbId
   }, [])
 
-  // Reconnect any bots that are still running after a page refresh
+  // Discover the user's active bots and subscribe to any we're not already
+  // tracking. Runs on mount AND every 15s so a bot that the backend launches
+  // later — e.g. a calendar/scheduled auto-join — shows up on the Live Recording
+  // page automatically, without a manual refresh. /api/bots/active is scoped to
+  // the authenticated user, so this never surfaces another user's meeting.
+  // Skipped entirely when signed out — the public landing page at "/" mounts
+  // this provider too, and every poll would be a guaranteed 401.
   useEffect(() => {
-    fetch('/api/bots/active', { credentials: 'include' })
-      .then(r => r.ok ? r.json() as Promise<{ active: string[] }> : null)
-      .then(data => {
-        if (!data?.active?.length) return
-        for (const code of data.active) start(code)
-      })
-      .catch(() => {})
+    if (!user) return
+    let cancelled = false
+    const sync = async () => {
+      try {
+        const r = await fetch('/api/bots/active', { credentials: 'include' })
+        if (!r.ok) return
+        const data = await r.json() as { active: string[] }
+        if (cancelled || !data?.active?.length) return
+        // Look up titles so an auto-discovered bot (calendar/scheduled auto-join)
+        // shows its real title on the Live page, not just the meeting code.
+        let titleByCode = new Map<string, string>()
+        try {
+          const mr = await fetch('/api/meetings', { credentials: 'include' })
+          if (mr.ok) {
+            const body = await mr.json() as { meetings: { meeting_code: string; title?: string | null }[] }
+            titleByCode = new Map(body.meetings.filter(m => m.title).map(m => [m.meeting_code, m.title as string]))
+          }
+        } catch { /* best-effort */ }
+        if (cancelled) return
+        for (const code of data.active) start(code, titleByCode.get(code)) // start() de-dupes
+      } catch { /* offline — retry next tick */ }
+    }
+    sync()
+    const iv = setInterval(sync, 15_000)
+    return () => { cancelled = true; clearInterval(iv) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // intentionally empty — only runs on mount; start is stable
+  }, [user]) // start is stable
 
   // Cleanup on unmount
   useEffect(() => () => { wsRef.current.forEach(ws => ws.close()) }, [])

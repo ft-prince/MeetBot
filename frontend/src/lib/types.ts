@@ -1,9 +1,97 @@
+export type PlanId = 'free' | 'pro' | 'business'
+
+export interface Usage {
+  plan: PlanId
+  planName: string
+  meetingsUsed: number
+  /** null = unlimited */
+  meetingsLimit: number | null
+  emailSyncDays: number
+  resetsAt: string
+}
+
 export interface User {
   id: string
   email: string
   name: string
   picture?: string
   autoJoinMinutes: number
+  isAdmin: boolean
+  usage: Usage
+}
+
+export interface AdminStats {
+  totalUsers: number
+  paidUsers: number
+  newUsers30d: number
+  activeUsers30d: number
+  totalMeetings: number
+  meetingsThisMonth: number
+  meetingsInProgress: number
+  minutesThisMonth: number
+  failedSummaries30d: number
+}
+
+export interface AdminSeriesPoint {
+  day: string
+  signups: number
+  meetings: number
+  activeUsers: number
+}
+
+export interface AdminTimeseries {
+  days: number
+  series: AdminSeriesPoint[]
+  planCounts: Partial<Record<PlanId, number>>
+}
+
+export interface AdminUserDetail {
+  user: {
+    id: string
+    email: string
+    name: string
+    picture?: string
+    plan: PlanId
+    planUntil: string | null
+    isAdmin: boolean
+    createdAt: string
+    autoJoinMinutes: number
+    effectivePlan: PlanId
+    meetingsLimit: number | null
+    emailSyncDays: number
+  }
+  counts: {
+    meetingsTotal: number
+    meetingsThisMonth: number
+    totalDurationMs: number
+    lastMeetingAt: string | null
+    emailThreads: number
+    emailActionItems: number
+    scheduledUpcoming: number
+  }
+  recentMeetings: {
+    id: string
+    title: string | null
+    meetingCode: string
+    startedAt: string
+    endedAt: string | null
+    durationMs: number | null
+    hasSummary: boolean
+  }[]
+}
+
+export interface AdminUser {
+  id: string
+  email: string
+  name: string
+  picture?: string
+  plan: PlanId
+  planUntil: string | null
+  isAdmin: boolean
+  createdAt: string
+  meetingsThisMonth: number
+  meetingsTotal: number
+  meetingsLimit: number | null
 }
 
 export interface MeetingRow {
@@ -14,6 +102,7 @@ export interface MeetingRow {
   ended_at: string | null
   duration_ms: number | null
   has_summary: boolean
+  participants?: string[]
 }
 
 export type ModuleStatus = 'ok' | 'partial' | 'failed' | 'skipped'
@@ -48,6 +137,12 @@ export interface SpeakerInsight {
   collaboration: string[]
 }
 
+export interface QAPair {
+  question: string
+  answer: string | null
+  askedBy: string | null
+}
+
 export interface MeetingSummary {
   id: string
   meetingCode: string
@@ -60,6 +155,14 @@ export interface MeetingSummary {
   keyQuestions: string[]
   chapters: Chapter[]
   speakerInsights: SpeakerInsight[]
+  meetingObjective: string
+  discussionPoints: string[]
+  decisions: string[]
+  risks: string[]
+  followUps: string[]
+  nextMeeting: string | null
+  outcome: string
+  qaPairs: QAPair[]
   processingStatus: ProcessingStatus
   language: string | null
   startedAt: string
@@ -202,6 +305,10 @@ export interface EmailSyncState {
   totalSynced: number
   syncStatus: 'idle' | 'syncing' | 'error'
   errorMessage: string | null
+  /** Lookback window in days used for fetching and for auto-analysis. */
+  syncDays: number
+  /** Windows the backend accepts; anything else is snapped to the nearest. */
+  syncDayOptions: number[]
 }
 
 export interface EmailDailyBrief {

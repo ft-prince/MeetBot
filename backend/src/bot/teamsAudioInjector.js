@@ -118,7 +118,9 @@
     if (!speaker || !text) return
 
     // Skip the bot's own speech
-    if (/note.?ai.?recorder|noteai|note.*?recorder/i.test(speaker)) return
+    // Drop our own bot's captions. Matches on "recorder" alone so the filter
+    // survives display-name rebrands (NoteAI Recorder → MeetMaster Recorder).
+    if (/recorder/i.test(speaker)) return
 
     const key = speaker + '::' + text
     if (key === lastCaptionKey) return
@@ -182,7 +184,24 @@
       clearInterval(captionDetectInterval)
     }
   })
-  captionBodyWatcher.observe(document.body, { childList: true, subtree: true })
+  // This file is injected via addInitScript, which runs at document-start —
+  // <body> does not exist yet. Observing null throws, and the throw aborts the
+  // rest of this module, so audio capture below never registers. Wait for the
+  // document to have a body before observing.
+  function watchBodyForCaptions () {
+    if (document.body) {
+      captionBodyWatcher.observe(document.body, { childList: true, subtree: true })
+      return
+    }
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => {
+        if (document.body) captionBodyWatcher.observe(document.body, { childList: true, subtree: true })
+      },
+      { once: true }
+    )
+  }
+  watchBodyForCaptions()
 
   // ── AudioWorklet + ScriptProcessor forwarding ───────────────────────────────
   function ensureCaptureCtx () {
@@ -424,6 +443,10 @@
   setInterval(pollRtcCooccurrence, 300)
 
   // ── DOM active-speaker → speaker_start / speaker_end ──────────────────────
+  // Screen-share pseudo-tiles ("X's screen", "Content") must never be treated as
+  // a speaking participant — otherwise starting a share swaps the active speaker
+  // (and every transcript segment) to a non-person.
+  const PSEUDO_NAME_RE = /(presentation|is presenting|is sharing|screen ?share|screenshar|shared screen|'s screen|\bscreen\b\s*$|^content$)/i
   function cleanName (raw) {
     let name = (raw || '').trim()
     name = name.replace(/,\s*(unmuted|muted|speaking|host|co-host|organizer|presenter|guest).*$/i, '').trim()
@@ -433,6 +456,7 @@
       if (name.slice(0, half) === name.slice(half)) name = name.slice(0, half)
     }
     if (!name || name.length < 2 || /^note|recorder/i.test(name)) return null
+    if (PSEUDO_NAME_RE.test(name)) return null
     return name
   }
 
@@ -599,8 +623,49 @@
     lastSpeaker = name
   }
 
+  // ── Screen-share detection ────────────────────────────────────────────────
+  // Teams renders a share stage plus "<name> is presenting" / "is sharing"
+  // status text. Emit the same screenshare_start/update/end events the Meet and
+  // Zoom injectors produce so the backend persists them and speaker attribution
+  // stays presentation-aware.
+  let shareState = 'inactive'
+  let sharePresenter = null
+
+  function detectTeamsShare () {
+    try {
+      const container = document.querySelector(
+        '[data-tid="sharing-stage"], [data-tid*="screenshare" i], [data-tid*="share-stage" i], [class*="screenShare" i]'
+      )
+      const txt = (document.body.innerText || '').slice(0, 5000)
+      const m = txt.match(/(.{2,60}?)\s+is (?:presenting|sharing)/i)
+      const presenter = m ? cleanName(m[1]) : null
+      return { active: Boolean(container) || /is presenting|is sharing/i.test(txt), presenter }
+    } catch { return { active: false, presenter: null } }
+  }
+
+  function pollScreenShare () {
+    const { active, presenter } = detectTeamsShare()
+    const state = active ? 'active' : 'inactive'
+    if (state !== shareState) {
+      shareState = state
+      sharePresenter = presenter
+      if (state === 'active') {
+        sendEvent({ type: 'screenshare_start', presenter, startMs: Date.now() })
+        console.log('[NoteAI] screen-share STARTED', presenter ? 'by ' + presenter : '')
+      } else {
+        sendEvent({ type: 'screenshare_end', presenter: sharePresenter, endMs: Date.now() })
+        sharePresenter = null
+        console.log('[NoteAI] screen-share ENDED')
+      }
+    } else if (state === 'active' && presenter && presenter !== sharePresenter) {
+      sharePresenter = presenter
+      sendEvent({ type: 'screenshare_update', presenter, ms: Date.now() })
+    }
+  }
+
   setTimeout(function () {
     console.log('[NoteAI] Teams speaker polling started')
     setInterval(pollActiveSpeaker, 300)
+    setInterval(pollScreenShare, 1000)
   }, 5000)
 })()

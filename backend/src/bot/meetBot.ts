@@ -3,6 +3,9 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import { config } from '../config'
+import { diag } from '../services/diag'
+import { launchPersistentContextResilient } from './browserLaunch'
+import { captureJoinDebug } from './botDebug'
 
 export interface BotOptions {
   meetingUrl: string
@@ -32,7 +35,6 @@ const CHROME_ARGS = [
   '--disable-features=IsolateOrigins,site-per-process',
   '--disable-site-isolation-trials',
   '--no-default-browser-check',
-  '--disable-extensions-except=',
 ]
 
 export class MeetBot {
@@ -44,7 +46,7 @@ export class MeetBot {
   private blockReason: string | null = null
 
   async start(opts: BotOptions): Promise<void> {
-    const { meetingUrl, displayName = 'NoteAI Recorder' } = opts
+    const { meetingUrl, displayName = 'MeetMaster Recorder' } = opts
 
     // Resolve the Chrome profile directory.
     // Priority: BOT_CHROME_PROFILE_DIR env → default ~/.noteai/bot-profile
@@ -59,13 +61,13 @@ export class MeetBot {
       // Uses a pre-signed-in Google session — required for org-restricted meetings.
       // Run `npx tsx bot-login.ts` once to create the profile.
       console.log(`[bot] Using saved Chrome profile: ${profileDir}`)
-      this.context = await chromium.launchPersistentContext(profileDir, {
+      this.context = await launchPersistentContextResilient(profileDir, {
         channel: 'chrome',
-        headless: false,
+        headless: config.botHeadless,
         args: CHROME_ARGS,
         permissions: ['microphone', 'camera'],
         ignoreDefaultArgs: ['--enable-automation'],
-      })
+      }, 'bot')
       this.persistentContext = true
     } else {
       // ── Guest mode ──────────────────────────────────────────────────────
@@ -74,7 +76,7 @@ export class MeetBot {
       console.log('[bot] Run `npx tsx bot-login.ts` once to fix this permanently.')
       this.browser = await chromium.launch({
         channel: 'chrome',
-        headless: false,
+        headless: config.botHeadless,
         args: CHROME_ARGS,
         ignoreDefaultArgs: ['--enable-automation'],
       })
@@ -83,15 +85,21 @@ export class MeetBot {
       })
     }
 
-    // Close any stale pages from a previous run (persistent context keeps them open)
+    // Reuse a tab the persistent context already has open. Closing the LAST tab
+    // of a persistent Chrome context (channel: 'chrome') shuts the browser down,
+    // so the following newPage() fails with
+    // "Protocol error (Target.createTarget): Failed to open a new tab".
+    // Keep the first existing page (or open one if there are none), then close
+    // any extras left over from a previous run.
     if (this.persistentContext && this.context) {
       const existingPages = this.context.pages()
-      for (const p of existingPages) {
+      this.page = existingPages[0] ?? await this.context.newPage()
+      for (const p of existingPages.slice(1)) {
         try { await p.close() } catch {}
       }
+    } else {
+      this.page = await this.context.newPage()
     }
-
-    this.page = await this.context.newPage()
 
     // Remove navigator.webdriver — the #1 signal Google uses to detect automation
     await this.context.addInitScript(() => {
@@ -106,7 +114,16 @@ export class MeetBot {
 
     this.page.on('crash', () => console.error('[bot] Page crashed'))
     this.page.on('console', msg => {
-      if (msg.text().startsWith('[NoteAI]')) console.log('[page]', msg.text())
+      const t = msg.text()
+      if (!t.startsWith('[NoteAI]')) return
+      console.log('[page]', t)
+      // Persist the capture-diagnostic lines (DIAG / track wiring) to bot-diag.log
+      // so a single file shows WHY a session was silent: trk.muted=true means Meet
+      // delivered no audio to the bot (nothing to transcribe — not a code bug),
+      // whereas trk.muted=false with analyserRMS=0 points at the capture path.
+      if (/\bDIAG\b|first frame|capturing via|audio flowing|sink failed|AudioWorklet/.test(t)) {
+        diag('PAGE ' + t.replace(/^\[NoteAI\]\s*/, ''))
+      }
     })
 
     await this.page.exposeFunction('noteAISendTrackAudio', (samples: number[], trackId: string) => {
@@ -196,6 +213,9 @@ export class MeetBot {
           }
           await new Promise<void>(resolve => setTimeout(resolve, 350))
 
+          const isPseudo = (n: string) =>
+            /(presentation|is presenting|presenting now|'s screen|screen share|screenshar|shared screen|\bscreen\b\s*$)/i.test(n)
+
           const remoteNames = Array.from(document.querySelectorAll('[data-participant-id]'))
             .map(tile => {
               for (const btn of Array.from(tile.querySelectorAll('button[aria-label]'))) {
@@ -204,14 +224,19 @@ export class MeetBot {
               }
               return null
             })
-            .filter((n): n is string => !!n && !/^note|recorder/i.test(n) && n.length > 1)
+            .filter((n): n is string => !!n && !/^note|recorder/i.test(n) && n.length > 1 && !isPseudo(n))
 
           const uniqueNames = [...new Set(remoteNames)]
           const tracks = (window as unknown as { __noteAITrackList: { trackId: string; index: number }[] }).__noteAITrackList || []
-          for (const { trackId, index } of tracks) {
-            const name = uniqueNames[index]
-            if (name && (window as unknown as Record<string, Function>).noteAISendTrackInfo) {
-              ;(window as unknown as Record<string, Function>).noteAISendTrackInfo(trackId, name)
+          // Index-based track→tile mapping is only trustworthy in the 1:1 case.
+          // With more participants, tile order shifts whenever someone joins,
+          // leaves, or starts presenting — mapping by index then binds WRONG
+          // names that stick for the whole meeting. Multi-party binding is
+          // handled by SSRC matching + co-occurrence voting instead.
+          if (uniqueNames.length === 1 && tracks.length === 1) {
+            const name = uniqueNames[0]
+            if ((window as unknown as Record<string, Function>).noteAISendTrackInfo) {
+              ;(window as unknown as Record<string, Function>).noteAISendTrackInfo(tracks[0].trackId, name)
             }
           }
         })
@@ -229,6 +254,7 @@ export class MeetBot {
         const unique = [...new Set(names)].filter(n =>
           !/^note/i.test(n) && !/recorder/i.test(n) &&
           n !== 'You' && !/^\d/.test(n) && !/participants?/i.test(n) &&
+          !/(presentation|presenting|'s screen|screen ?share)/i.test(n) &&
           n.length >= 2 && n.length <= 50
         )
         if (unique.length) {
@@ -334,6 +360,12 @@ export class MeetBot {
       await page.waitForTimeout(500).catch(() => {})
     }
     console.warn('[bot] Pre-join UI not detected after 30s — proceeding anyway')
+    // None of the lobby signals matched. Before blindly running the rest of the
+    // flow, capture the page and check whether we're actually on a block/sign-in
+    // page (checkCantJoin normally only runs post-click, so a pre-join block was
+    // previously invisible until the meeting-UI wait timed out minutes later).
+    await this.captureDebug(page, 'prejoin-timeout')
+    await this.checkCantJoin(page)
   }
 
   private async trySetName(page: Page, name: string): Promise<void> {
@@ -412,6 +444,7 @@ export class MeetBot {
       await page.waitForTimeout(500).catch(() => {})
     }
     console.warn('[bot] Join button not found/interactive after 30s — may have auto-joined or landed in waiting room')
+    await this.captureDebug(page, 'joinbtn-timeout')
   }
 
   private async hasLeaveButton(page: Page): Promise<boolean> {
@@ -505,11 +538,16 @@ export class MeetBot {
     return false
   }
 
+  private captureDebug(page: Page, label: string): Promise<void> {
+    return captureJoinDebug(page, label, 'bot')
+  }
+
   // ── Alone detection ───────────────────────────────────────────────────────
 
   private watchForAlone(onEnded?: () => void): void {
     const page = this.page!
-    const ALONE_MS = 2 * 60 * 1000
+    const aloneMin = Math.max(1, config.botAloneExitMin)
+    const ALONE_MS = aloneMin * 60 * 1000
     const CHECK_MS = 30_000
     const GRACE_MS = 60_000
     let aloneAt: number | null = null
@@ -519,36 +557,48 @@ export class MeetBot {
       if (this.ended) { clearInterval(iv); return }
       if (Date.now() - joinedAt < GRACE_MS) return
       try {
-        // Count OTHER participants robustly, independent of hover state.
-        // "More options for X" buttons only render on hover, so counting them
-        // mis-reads 0 when participants are present but silent/unhovered — which
-        // would make the bot wrongly leave. Instead count participant tiles
-        // (the bot is one tile) and read the people-count badge as a fallback.
-        const count = await page.evaluate(() => {
-          const tiles = document.querySelectorAll('[data-participant-id]').length
-          // Meet shows a participant count badge (e.g. on the People button).
-          let badge = 0
-          for (const el of Array.from(document.querySelectorAll('[aria-label]'))) {
-            const m = (el.getAttribute('aria-label') || '').match(/(\d+)\s+(participant|people|in the (call|meeting))/i)
-            if (m) { badge = Math.max(badge, parseInt(m[1], 10)); }
-          }
-          // Others = total minus the bot's own tile. Prefer the larger of the two
-          // signals so a transient empty tile-list doesn't trigger a false "alone".
-          const others = Math.max(tiles - 1, badge - 1, 0)
-          return others
-        })
-        if (count <= 0) {
-          if (!aloneAt) { aloneAt = Date.now(); console.log('[bot] Alone (no other participants) — will leave in 2 min') }
-          else if (Date.now() - aloneAt >= ALONE_MS) {
-            console.log('[bot] Alone 2 min — leaving'); clearInterval(iv)
+        // Count OTHER participants robustly, independent of hover state, plus
+        // Meet's explicit "only one here" banner. Extracted to evaluateMeetAlone
+        // so the detection can be unit-tested against a synthetic Meet DOM.
+        const { others, badge, tiles, banner } = await evaluateMeetAlone(page)
+        // Positive-evidence-only decision (see isMeetAlone): a collapsed layout
+        // or a silent stretch must never look like "everyone left".
+        const isAlone = isMeetAlone({ others, badge, tiles, banner })
+        if (isAlone) {
+          if (!aloneAt) {
+            aloneAt = Date.now()
+            console.log(`[bot] Alone (no other participants) — will leave in ${aloneMin} min if no one returns`)
+            diag(`ALONE-CHECK ${this.constructor.name}: alone detected (tiles=${tiles} badge=${badge} banner=${banner}) — ${aloneMin} min countdown started`)
+          } else if (Date.now() - aloneAt >= ALONE_MS) {
+            console.log(`[bot] Alone ${aloneMin} min — leaving`); clearInterval(iv)
+            diag(`AUTO-LEAVE: bot alone for ${aloneMin} min (tiles=${tiles} badge=${badge} banner=${banner}) — leaving meeting`)
             if (!this.ended) { this.ended = true; onEnded?.(); await this.stop() }
           }
         } else {
-          if (aloneAt) console.log(`[bot] Participants rejoined (${count})`)
+          if (aloneAt) console.log(`[bot] Participants rejoined (${others})`)
           aloneAt = null
         }
       } catch {}
     }, CHECK_MS)
+  }
+
+  // ── Health probe (used by the botManager backstop) ─────────────────────────
+  // True while the bot is still on the meeting page and Chrome is responsive.
+  // The duration backstop re-arms instead of force-exiting while this holds, so
+  // a genuinely long meeting is never cut off — only a wedged bot is killed.
+  async isMeetingHealthy(): Promise<boolean> {
+    const page = this.page
+    if (this.ended || !page) return false
+    try {
+      if (!/meet\.google\.com/i.test(page.url())) return false
+      await Promise.race([
+        page.evaluate(() => document.readyState),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('page unresponsive')), 10_000)),
+      ])
+      return true
+    } catch {
+      return false
+    }
   }
 
   // ── End detection ─────────────────────────────────────────────────────────
@@ -569,7 +619,7 @@ export class MeetBot {
     const iv = setInterval(async () => {
       if (this.ended) { clearInterval(iv); return }
       try {
-        if (await page.$('[data-call-ended], [jsname="r8qRAd"]')) {
+        if (await evaluateMeetEnded(page)) {
           this.ended = true; clearInterval(iv)
           console.log('[bot] Meeting ended (UI signal)')
           onEnded?.(); await this.stop(); return
@@ -582,4 +632,50 @@ export class MeetBot {
       } catch {}
     }, 3000)
   }
+}
+
+// ── Exported, testable Meet auto-exit detection ──────────────────────────────
+// These run the SAME DOM queries the bot's watchers use, but as standalone units
+// so the "everyone left" / "meeting ended" logic can be verified against a
+// synthetic Meet DOM without a live meeting.
+
+export interface MeetAloneSignals { others: number; badge: number; tiles: number; banner: boolean }
+
+/** Read participant-count signals from a (real or synthetic) Meet page. */
+export async function evaluateMeetAlone(page: Page): Promise<MeetAloneSignals> {
+  return page.evaluate(() => {
+    const tiles = document.querySelectorAll('[data-participant-id]').length
+    let badge = 0
+    for (const el of Array.from(document.querySelectorAll('[aria-label]'))) {
+      const m = (el.getAttribute('aria-label') || '').match(/(\d+)\s+(participant|people|in the (call|meeting))/i)
+      if (m) { badge = Math.max(badge, parseInt(m[1], 10)); }
+    }
+    const text = (document.body.innerText || '')
+    const banner = /you.re the only one here|no one else is here|waiting for others to join/i.test(text)
+    const others = Math.max(tiles - 1, badge - 1, 0)
+    return { others, badge, tiles, banner }
+  })
+}
+
+/**
+ * Pure decision: is the bot alone? Requires POSITIVE evidence — Meet's explicit
+ * "you're the only one here" banner, or a participant-count badge that reads 1
+ * (the bot itself). A low TILE count alone is NOT evidence: Meet collapses the
+ * grid to a single tile during screen share, spotlight and inactive layouts, so
+ * `tiles=1 badge=0 banner=false` is what a perfectly healthy, silent meeting
+ * looks like (confirmed false auto-leaves in bot-diag.log). Absence of signals
+ * means "can't tell" → stay in the meeting.
+ */
+export function isMeetAlone(s: MeetAloneSignals): boolean {
+  if (s.banner) return true            // explicit "only one here" banner
+  if (s.badge >= 2) return false       // badge says others are present
+  if (s.badge === 1) return true       // badge counted exactly the bot
+  // Badge unreadable: only ZERO tiles (not even the bot's own) suggests we're
+  // no longer in a rendered meeting. One tile is normal — never treat it as alone.
+  return s.tiles === 0
+}
+
+/** True when Meet shows the "call ended" UI (host ended / removed). */
+export async function evaluateMeetEnded(page: Page): Promise<boolean> {
+  return !!(await page.$('[data-call-ended], [jsname="r8qRAd"]'))
 }

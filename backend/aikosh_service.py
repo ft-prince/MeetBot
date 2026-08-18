@@ -1,5 +1,5 @@
 """
-NoteAI — AIKosh / AI4Bharat IndicConformer transcription sidecar
+MeetMaster — AIKosh / AI4Bharat IndicConformer transcription sidecar
 
 Receives raw 16kHz Int16 PCM audio over WebSocket, transcribes in fixed chunks
 using the AI4Bharat IndicConformer-600M multilingual model, and returns JSON
@@ -49,7 +49,7 @@ DECODING = os.environ.get("AIKOSH_DECODING", "ctc")  # "ctc" (fast) | "rnnt" (ac
 # Skip near-silent chunks — RMS below this (on float32 [-1,1]) is treated as silence
 SILENCE_RMS = float(os.environ.get("AIKOSH_SILENCE_RMS", "0.005"))
 
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 
 # ── Load model ──────────────────────────────────────────────────────────────
 print(f"[aikosh] Loading {MODEL_ID}  device={DEVICE}  decoding={DECODING}  lang={LANG}")

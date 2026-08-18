@@ -1,5 +1,5 @@
 """
-NoteAI — WhisperX transcription sidecar
+MeetMaster — WhisperX transcription sidecar
 Receives raw 16kHz Int16 PCM audio over WebSocket, transcribes in 5s chunks,
 returns JSON transcript segments with word-level timestamps.
 

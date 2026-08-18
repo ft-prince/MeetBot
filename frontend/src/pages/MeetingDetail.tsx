@@ -23,6 +23,9 @@ export function MeetingDetail() {
   const [botStatus, setBotStatus] = useState<BotStatus>('unknown')
   const [botAction, setBotAction] = useState<'stopping' | 'exiting' | null>(null)
   const [botError, setBotError] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState('')
+  const [savingTitle, setSavingTitle] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const processPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -105,6 +108,26 @@ export function MeetingDetail() {
     }
   }
 
+  const beginEditTitle = () => {
+    setTitleDraft(summary?.title || summary?.meetingCode || '')
+    setEditingTitle(true)
+  }
+
+  const saveTitle = async () => {
+    const next = titleDraft.trim()
+    if (!next) { setEditingTitle(false); return }
+    setSavingTitle(true)
+    try {
+      const { title } = await api.updateMeetingTitle(id, next)
+      setSummary(prev => (prev ? { ...prev, title } : prev))
+      setEditingTitle(false)
+    } catch (err) {
+      setBotError((err as Error).message)
+    } finally {
+      setSavingTitle(false)
+    }
+  }
+
   const speakerColors = useMemo(() => {
     const names = [...new Set(segments.map(s => s.speaker_name || s.speaker_label || '?'))]
     return colorMapFor(names)
@@ -148,12 +171,45 @@ export function MeetingDetail() {
           <div className="flex items-center gap-3 flex-wrap">
             <button onClick={() => navigate(-1)} className="btn btn-secondary btn-sm">Back</button>
             <div className="flex-1 min-w-0">
-              <div className="font-mono text-sm sm:text-base font-bold text-accent truncate">{summary?.meetingCode || id}</div>
-              {summary?.startedAt && (
-                <div className="text-[11px] sm:text-xs text-muted mt-0.5">
-                  {fmtDate(summary.startedAt)} · {fmtTimeOfDay(summary.startedAt)} · {fmtDuration(summary.durationMs)}
+              {editingTitle ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    autoFocus
+                    className="input text-sm sm:text-base font-bold py-1 max-w-md"
+                    value={titleDraft}
+                    onChange={e => setTitleDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') setEditingTitle(false) }}
+                    maxLength={200}
+                    disabled={savingTitle}
+                  />
+                  <button onClick={saveTitle} disabled={savingTitle} className="btn btn-primary btn-sm">
+                    {savingTitle ? 'Saving…' : 'Save'}
+                  </button>
+                  <button onClick={() => setEditingTitle(false)} disabled={savingTitle} className="btn btn-secondary btn-sm">Cancel</button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 group">
+                  <span className="text-sm sm:text-base font-bold text-ink truncate">{summary?.title || summary?.meetingCode || id}</span>
+                  {summary && (
+                    <button
+                      onClick={beginEditTitle}
+                      className="text-muted hover:text-accent p-0.5 rounded transition-colors flex-shrink-0"
+                      title="Rename meeting"
+                      aria-label="Rename meeting"
+                    >
+                      <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                        <path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
               )}
+              <div className="text-[11px] sm:text-xs text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
+                <span className="font-mono">{summary?.meetingCode || id}</span>
+                {summary?.startedAt && (
+                  <span>· {fmtDate(summary.startedAt)} · {fmtTimeOfDay(summary.startedAt)} · {fmtDuration(summary.durationMs)}</span>
+                )}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -168,6 +224,16 @@ export function MeetingDetail() {
                 : hasSummary
                   ? <Pill variant="done">Summarized</Pill>
                   : <Pill variant="pending">Processing</Pill>
+            )}
+            {!loading && !isLive && hasSummary && (
+              <a
+                href={`/api/meetings/${id}/report.pdf`}
+                download
+                className="btn btn-secondary btn-sm"
+                title="Download the professional PDF meeting report"
+              >
+                ⬇ PDF Report
+              </a>
             )}
             {meetingCode && isLive && (
               <div className="flex items-center gap-2">
@@ -380,21 +446,75 @@ function SummaryTab({
     if (isProcessing) return <ProcessingState label="Generating AI summary" />
     return <EmptyState icon="🤖" title={isLive ? 'Summary not ready yet' : 'No summary available'} hint={isLive ? 'Will be generated when the meeting ends.' : ''} />
   }
+  const s = summary!
   return (
     <TabPad className="flex flex-col gap-5">
+      {s.meetingObjective && (
+        <section className="bg-app-bg border border-gray-200 rounded-lg px-4 py-3">
+          <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted mb-1">Meeting Objective</h3>
+          <p className="text-sm leading-relaxed text-gray-800">{s.meetingObjective}</p>
+        </section>
+      )}
       {hasShort && (
         <section>
           <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted mb-2">Executive Summary</h3>
-          <p className="text-sm leading-relaxed text-gray-800">{summary!.summary}</p>
+          <p className="text-sm leading-relaxed text-gray-800 whitespace-pre-line">{s.summary}</p>
+        </section>
+      )}
+      {(s.discussionPoints?.length ?? 0) > 0 && (
+        <BulletSection title="Key Discussion Points" items={s.discussionPoints} marker="→" markerClass="text-accent" />
+      )}
+      {(s.decisions?.length ?? 0) > 0 && (
+        <BulletSection title="Decisions Made" items={s.decisions} marker="✓" markerClass="text-success" />
+      )}
+      {(s.risks?.length ?? 0) > 0 && (
+        <BulletSection title="Risks & Blockers" items={s.risks} marker="⚠" markerClass="text-warning" />
+      )}
+      {(s.followUps?.length ?? 0) > 0 && (
+        <BulletSection title="Follow-ups" items={s.followUps} marker="↻" markerClass="text-blue-600" />
+      )}
+      {s.nextMeeting && (
+        <section className="border border-blue-200 bg-blue-50 rounded-lg px-4 py-3">
+          <h3 className="text-[11px] font-bold uppercase tracking-wider text-blue-700 mb-1">Next Meeting</h3>
+          <p className="text-sm leading-relaxed text-gray-800">{s.nextMeeting}</p>
+        </section>
+      )}
+      {s.outcome && (
+        <section>
+          <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted mb-2">Overall Outcome</h3>
+          <p className="text-sm leading-relaxed text-gray-800">{s.outcome}</p>
         </section>
       )}
       {hasLong && (
         <section>
           <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted mb-2">Detailed Rewrite</h3>
-          <p className="text-sm leading-relaxed text-gray-800 whitespace-pre-line">{summary!.detailedRewrite}</p>
+          <p className="text-sm leading-relaxed text-gray-800 whitespace-pre-line">{s.detailedRewrite}</p>
         </section>
       )}
     </TabPad>
+  )
+}
+
+function BulletSection({
+  title, items, marker, markerClass,
+}: {
+  title: string
+  items: string[]
+  marker: string
+  markerClass: string
+}) {
+  return (
+    <section>
+      <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted mb-2">{title}</h3>
+      <ul className="flex flex-col gap-0">
+        {items.map((x, i) => (
+          <li key={i} className="flex items-start gap-2.5 py-2 border-b border-gray-100 last:border-b-0 last:pb-0 text-sm leading-relaxed">
+            <span className={'font-bold flex-shrink-0 mt-0.5 ' + markerClass}>{marker}</span>
+            <span className="text-gray-700">{x}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
@@ -480,8 +600,10 @@ function InsightsTab({
   if (error) return <ErrorState message={error} />
   const insights = summary?.keyInsights ?? []
   const important = summary?.importantPoints ?? []
-  const questions = summary?.keyQuestions ?? []
-  if (insights.length === 0 && important.length === 0 && questions.length === 0) {
+  const qaPairs = summary?.qaPairs ?? []
+  // Older meetings only have the flat open-question list — show it when no Q&A pairs exist.
+  const questions = qaPairs.length > 0 ? [] : (summary?.keyQuestions ?? [])
+  if (insights.length === 0 && important.length === 0 && questions.length === 0 && qaPairs.length === 0) {
     if (isProcessing) return <ProcessingState label="Extracting key insights" />
     return <EmptyState icon="💡" title="No insights yet" hint={isLive ? 'Generated after the meeting ends.' : ''} />
   }
@@ -509,6 +631,30 @@ function InsightsTab({
               <li key={i} className="flex items-start gap-2.5 py-2.5 border-b border-gray-100 last:border-b-0 last:pb-0 text-sm leading-relaxed">
                 <span className="w-5 h-5 rounded-full bg-amber-100 text-warning text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">{i + 1}</span>
                 <span className="text-gray-700">{point}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {qaPairs.length > 0 && (
+        <section>
+          <h3 className="text-[11px] font-bold uppercase tracking-wider text-muted mb-2">Questions & Answers</h3>
+          <ul className="flex flex-col gap-2">
+            {qaPairs.map((qa, i) => (
+              <li key={i} className="border border-gray-200 rounded-lg p-3">
+                <div className="flex items-start gap-2 text-sm leading-relaxed">
+                  <span className="text-blue-600 font-bold flex-shrink-0 mt-0.5">Q</span>
+                  <span className="text-gray-800 font-medium">
+                    {qa.question}
+                    {qa.askedBy && <span className="text-[11px] text-muted font-normal ml-1.5">— {qa.askedBy}</span>}
+                  </span>
+                </div>
+                <div className="flex items-start gap-2 text-sm leading-relaxed mt-1.5">
+                  <span className={'font-bold flex-shrink-0 mt-0.5 ' + (qa.answer ? 'text-success' : 'text-warning')}>A</span>
+                  {qa.answer
+                    ? <span className="text-gray-700">{qa.answer}</span>
+                    : <span className="text-muted italic">Not answered during the meeting</span>}
+                </div>
               </li>
             ))}
           </ul>
@@ -548,7 +694,7 @@ function SpeakersTab({
   return (
     <TabPad className="flex flex-col gap-4">
       {analytics.mostActive && (
-        <div className="bg-accent-light border border-orange-200 rounded-lg px-4 py-3 flex items-center gap-3">
+        <div className="bg-accent-light border border-blue-200 rounded-lg px-4 py-3 flex items-center gap-3">
           <div className="text-xl">🏆</div>
           <div className="flex-1">
             <div className="text-[10px] font-bold uppercase tracking-wider text-accent">Most Active</div>

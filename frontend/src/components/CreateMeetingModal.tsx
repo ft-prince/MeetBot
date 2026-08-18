@@ -110,7 +110,7 @@ export function CreateMeetingModal({ open, onClose, onCreated }: Props) {
       >
         <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-base font-bold flex items-center gap-2">
-            <svg width="18" height="18" fill="none" stroke="#F06428" strokeWidth="2" viewBox="0 0 24 24">
+            <svg width="18" height="18" fill="none" stroke="#2F55D4" strokeWidth="2" viewBox="0 0 24 24">
               <rect x="3" y="4" width="18" height="18" rx="2" />
               <line x1="16" y1="2" x2="16" y2="6" />
               <line x1="8" y1="2" x2="8" y2="6" />

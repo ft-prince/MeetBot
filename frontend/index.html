@@ -3,7 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NoteAI — Meeting Intelligence</title>
+    <title>MeetMaster — AI meeting notes for Google Meet, Zoom, and Teams</title>
+    <!-- Defaults for the SPA shell; per-page values are set on route change by
+         usePageMeta in src/marketing/shell.tsx. -->
+    <meta name="description" content="Invite the MeetMaster bot to your meeting. Get a live transcript with speaker labels, an AI summary, and action items the moment the call ends." />
+    <meta property="og:site_name" content="MeetMaster" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="MeetMaster — AI meeting notes for Google Meet, Zoom, and Teams" />
+    <meta property="og:description" content="Invite the MeetMaster bot to your meeting. Get a live transcript with speaker labels, an AI summary, and action items the moment the call ends." />
+    <meta name="twitter:card" content="summary" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Four weights only; the system stack in tailwind.config.js covers a
+         failed load, so this is a progressive enhancement, not a dependency. -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body class="bg-app-bg text-ink font-sans antialiased">
     <div id="root"></div>
