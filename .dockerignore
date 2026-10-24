@@ -1,0 +1,16 @@
+# Build context is the repo root (deploy/Dockerfile). Keep it small and secret-free.
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!deploy/.env.example
+**/*.log
+**/__pycache__
+**/*.pyc
+.git
+.claude
+memory
+docs
+bot-service
+backend/whisper_tiny
+**/.DS_Store

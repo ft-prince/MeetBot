@@ -1,0 +1,65 @@
+# noteAI / MeetMaster production stack — meet.nexren.ai
+#
+#   cd deploy && cp .env.example .env && <fill .env>
+#   docker compose --profile tunnel up -d --build     # on the server
+#   docker compose up -d --build                      # locally: same stack, no tunnel
+#
+# Nothing is exposed to the internet directly: the app listens on 127.0.0.1 only
+# and Cloudflare Tunnel (outbound connection) publishes it as meet.nexren.ai.
+# In the Cloudflare dashboard the tunnel's public hostname must point to
+#   meet.nexren.ai  →  http://localhost:8001
+
+name: noteai
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: noteai-app:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8001"
+      DATABASE_URL: postgresql://noteai:${POSTGRES_PASSWORD}@db:5432/noteai
+      STT_ENGINE: deepgram
+      BOT_ENGINE: inhouse
+    ports:
+      - "127.0.0.1:8001:8001"   # reached by cloudflared on the host
+      - "127.0.0.1:5900:5900"   # VNC for the one-time bot login — use an SSH tunnel
+    volumes:
+      - bot-profiles:/root/.noteai   # Meet/Zoom/Teams bot logins survive rebuilds
+    shm_size: 1gb                    # Chrome crashes with Docker's default 64 MB /dev/shm
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: noteai
+      POSTGRES_USER: noteai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U noteai -d noteai"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    network_mode: host               # so "http://localhost:8001" reaches the app
+    profiles: ["tunnel"]             # opt-in: never started by a local test run
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  bot-profiles:

@@ -19,3 +19,6 @@ whisper_tiny/
 model.bin
 dist/
 build/
+
+# production secrets
+deploy/.env
