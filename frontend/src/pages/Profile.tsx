@@ -4,6 +4,7 @@ import { Topbar } from '../components/Topbar'
 import { Toggle } from '../components/Toggle'
 import { useAuth } from '../context/AuthContext'
 import { api } from '../lib/api'
+import { PlanBilling } from '../components/PlanBilling'
 
 export function Profile() {
   const { user, signOut, updateUser } = useAuth()
@@ -60,6 +61,11 @@ export function Profile() {
             <div className="border-t border-gray-200">
               <Row label="Account type" value="Google" />
               <Row
+                label="Plan"
+                value={user.usage.plan === 'free' ? user.usage.planName : `${user.usage.planName} ✓`}
+                valueClass={user.usage.plan === 'free' ? 'text-muted' : 'text-success font-semibold'}
+              />
+              <Row
                 label="Auto-bot join"
                 value={autoStatus}
                 valueClass={(user.autoJoinMinutes || 0) > 0 ? 'text-success font-semibold' : 'text-muted'}
@@ -114,7 +120,8 @@ export function Profile() {
             </div>
           </div>
 
-          <div className="lg:col-start-2">
+          <div className="lg:col-start-2 flex flex-col gap-4 sm:gap-6">
+            <PlanBilling />
             <AccountData />
           </div>
         </div>

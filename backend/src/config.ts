@@ -87,14 +87,17 @@ export const config = {
   },
   // Support ticket email — set SUPPORT_EMAIL to enable email delivery
   // Razorpay checkout. Use rzp_test_* keys until going live.
+  // Prices are in services/planService.ts (PRICES); GST is added on top.
   razorpay: {
     keyId: process.env.RAZORPAY_KEY_ID || '',
     keySecret: process.env.RAZORPAY_KEY_SECRET || '',
-    // Price of one month of Pro, in paise (₹1,499 default).
-    proAmountPaise: parseInt(process.env.RAZORPAY_PRO_AMOUNT_PAISE || '149900', 10),
-    // Monthly Pro plan created in Razorpay Dashboard → Subscriptions → Plans (plan_…).
-    // Empty = only one-time payments are offered.
-    proPlanId: process.env.RAZORPAY_PRO_PLAN_ID || '',
+    gstPercent: parseFloat(process.env.BILLING_GST_PERCENT ?? '18'),
+    // Auto-renew plans from Razorpay Dashboard → Subscriptions → Plans (plan_…).
+    // Each must match PRICES + GST for its region/cycle. Empty = one-time only.
+    planIds: {
+      in:   { monthly: process.env.RAZORPAY_PLAN_IN_MONTHLY || '',   annual: process.env.RAZORPAY_PLAN_IN_ANNUAL || '' },
+      intl: { monthly: process.env.RAZORPAY_PLAN_INTL_MONTHLY || '', annual: process.env.RAZORPAY_PLAN_INTL_ANNUAL || '' },
+    },
     // Dashboard → Webhooks secret. Events: payment.captured, subscription.charged,
     // subscription.cancelled, subscription.completed, subscription.halted.
     webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || '',

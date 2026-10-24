@@ -295,44 +295,6 @@ export function LibraryMock() {
 }
 
 /**
- * The usage counter from the dashboard. Pricing is entirely about this number,
- * so the pricing page shows the thing being counted.
- */
-export function UsageMock() {
-  const months = [
-    { label: 'Recorded this month', used: 62, limit: 100 },
-    { label: 'Email sync window', used: 30, limit: 30, unit: 'days' },
-  ]
-  return (
-    <Frame title="Usage" right="resets on the 1st">
-      <ul className="flex flex-col gap-4">
-        {months.map(m => (
-          <li key={m.label}>
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-[13px] text-slate-600">{m.label}</span>
-              <span className="font-mono text-[13px] font-medium text-ink">
-                {m.used}
-                <span className="text-slate-500"> / {m.limit}{m.unit ? ` ${m.unit}` : ''}</span>
-              </span>
-            </div>
-            <span className="mt-2 block h-2 w-full overflow-hidden rounded-full bg-slate-100">
-              <span
-                className="block h-full rounded-full bg-accent"
-                style={{ width: `${Math.round((m.used / m.limit) * 100)}%` }}
-              />
-            </span>
-          </li>
-        ))}
-      </ul>
-      <div className="mt-4 flex items-center gap-2 border-t border-slate-100 pt-3.5">
-        <Icon name="checkCircle" size={14} className="text-success" />
-        <span className="text-[12px] text-slate-600">Enforced server-side, counted from your meetings</span>
-      </div>
-    </Frame>
-  )
-}
-
-/**
  * The full application shell — sidebar, usage, a live meeting, and the recent
  * meetings list. This is the one surface big enough to answer "what does it
  * actually look like", so it carries the hero and the showcase section.

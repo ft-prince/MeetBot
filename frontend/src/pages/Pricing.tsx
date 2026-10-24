@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Topbar } from '../components/Topbar'
-import { useAuth } from '../context/AuthContext'
 import { UsageCard } from '../components/UsageCard'
-import type { PlanId } from '../lib/types'
+import { PricingPlans, type PricingSelection } from '../components/PricingPlans'
+import { useAuth } from '../context/AuthContext'
+import { formatPlanDate } from '../lib/planDisplay'
+import type { PricingPlan } from '../lib/pricing'
 
-// Pro is bought via Razorpay Checkout (backend/src/routes/billing.ts); Business
-// still goes through support, who set the plan from the Admin page.
-const ONLINE_PLANS: PlanId[] = ['pro']
+// Pro is bought via Razorpay Checkout (backend/src/routes/billing.ts);
+// Enterprise goes through sales.
 
 declare global {
   interface Window { Razorpay?: new (opts: Record<string, unknown>) => { open: () => void } }
+}
+
+interface BillingStatus {
+  subscribed: boolean
+  gstPercent: number
+  subscriptionsEnabled: Record<'in' | 'intl', Record<'monthly' | 'annual', boolean>>
 }
 
 function loadCheckout(): Promise<void> {
@@ -34,81 +41,12 @@ async function postJson(url: string, body: unknown) {
   return j
 }
 
-interface BillingStatus {
-  subscribed: boolean
-  subscriptionsEnabled: boolean
-}
-
-interface Plan {
-  id: PlanId
-  name: string
-  price: string
-  cadence: string
-  blurb: string
-  features: string[]
-  highlight?: boolean
-  cta: string
-}
-
-const PLANS: Plan[] = [
-  {
-    id: 'free',
-    name: 'Basic',
-    price: '$0',
-    cadence: 'per user / month',
-    blurb: 'For trying MeetMaster on your own calls.',
-    features: [
-      '5 recorded meetings per month',
-      'Live transcript with speaker labels',
-      'AI summary + action items',
-      'PDF report by email',
-      'Email sync window: up to 10 days',
-      'Google Meet support',
-    ],
-    cta: 'Upgrade',
-  },
-  {
-    id: 'pro',
-    name: 'Pro',
-    price: '$18',
-    cadence: 'per user / month',
-    blurb: 'For people who live in back-to-back meetings.',
-    features: [
-      'Everything in Basic',
-      '100 recorded meetings per month',
-      'Calendar auto-join',
-      'Email sync window: up to 30 days',
-      'Pre-meeting email context per event',
-      'Zoom and Microsoft Teams support',
-      'Priority transcription queue',
-    ],
-    highlight: true,
-    cta: 'Upgrade to Pro',
-  },
-  {
-    id: 'business',
-    name: 'Business',
-    price: 'Custom',
-    cadence: 'billed annually',
-    blurb: 'For teams that need shared meeting memory.',
-    features: [
-      'Everything in Pro',
-      'Unlimited recorded meetings',
-      'Shared workspace and search',
-      'Self-hosted transcription option',
-      'SSO and audit logging',
-      'Custom retention policy',
-      'Dedicated support channel',
-    ],
-    cta: 'Talk to us',
-  },
-]
-
 export function Pricing() {
   const { user, refresh } = useAuth()
   const usage = user?.usage
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
   const [billing, setBilling] = useState<BillingStatus | null>(null)
 
   const loadStatus = useCallback(() => {
@@ -119,26 +57,32 @@ export function Pricing() {
   }, [])
   useEffect(loadStatus, [loadStatus])
 
-  /** Open Razorpay Checkout for either a one-time order or a subscription. */
-  async function checkout(plan: PlanId, mode: 'once' | 'subscribe') {
+  /** Open Razorpay Checkout for a one-time order or a subscription. */
+  async function checkout(sel: PricingSelection, mode: 'once' | 'subscribe') {
     setBusy(true)
     setError('')
+    setSuccess('')
     try {
       await loadCheckout()
-      const start = await postJson(mode === 'once' ? '/api/billing/order' : '/api/billing/subscription', { plan })
+      const body = { plan: 'pro', ...sel }
+      const start = await postJson(mode === 'once' ? '/api/billing/order' : '/api/billing/subscription', body)
+      const period = sel.cycle === 'annual' ? 'year' : 'month'
       new window.Razorpay!({
         key: start.keyId,
         ...(mode === 'once'
           ? { order_id: start.orderId, amount: start.amount, currency: start.currency }
           : { subscription_id: start.subscriptionId }),
-        name: 'MeetMaster',
-        description: mode === 'once' ? `${plan} plan — 1 month` : `${plan} plan — renews monthly`,
+        name: 'Renata AI',
+        description: mode === 'once' ? `Pro — 1 ${period} (incl. GST)` : `Pro — renews every ${period} (incl. GST)`,
         prefill: { email: user?.email, name: user?.name },
         handler: async (payment: Record<string, string>) => {
           try {
-            await postJson('/api/billing/verify', payment)
+            const result = await postJson('/api/billing/verify', payment)
             await refresh()
             loadStatus()
+            setSuccess(result.planUntil
+              ? `Payment successful — you're on Pro until ${formatPlanDate(result.planUntil)}.`
+              : `Payment successful — you're on Pro.`)
           } catch (e) {
             setError((e as Error).message)
           } finally {
@@ -160,6 +104,7 @@ export function Pricing() {
     try {
       await postJson('/api/billing/cancel', {})
       loadStatus()
+      setSuccess('Auto-renew is off. Pro stays active until the end of your paid period.')
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -167,105 +112,79 @@ export function Pricing() {
     }
   }
 
-  function renderOnlineActions(p: Plan) {
-    const isCurrent = usage?.plan === p.id
-    const primary = 'btn w-full justify-center ' + (p.highlight ? 'btn-primary' : 'btn-secondary')
+  function renderAction(plan: PricingPlan, sel: PricingSelection) {
+    const isCurrent = usage?.plan === plan.id
+    if (plan.id === 'free') {
+      return (
+        <button disabled className="btn btn-secondary w-full justify-center">
+          {isCurrent ? 'Current plan' : 'Included in your plan'}
+        </button>
+      )
+    }
+    if (plan.id === 'business') {
+      return isCurrent
+        ? <button disabled className="btn btn-secondary w-full justify-center">Current plan</button>
+        : <Link to="/help?issue=upgrade-request&plan=business" className="btn btn-secondary w-full justify-center">Talk to sales</Link>
+    }
+    // Pro
+    if (billing?.subscribed && isCurrent) {
+      return (
+        <div className="flex flex-col gap-2">
+          <button disabled className="btn btn-secondary w-full justify-center">✓ Auto-renew is on</button>
+          <button onClick={cancelSubscription} disabled={busy} className="btn btn-secondary btn-sm w-full justify-center">
+            Cancel auto-renew
+          </button>
+        </div>
+      )
+    }
+    const canSubscribe = billing?.subscriptionsEnabled?.[sel.region]?.[sel.cycle]
+    const period = sel.cycle === 'annual' ? 'year' : 'month'
     return (
       <div className="flex flex-col gap-2">
-        {billing?.subscribed && isCurrent ? (
-          <>
-            <button disabled className="btn btn-secondary w-full justify-center">Current plan · auto-renewing</button>
-            <button onClick={cancelSubscription} disabled={busy} className="btn btn-secondary btn-sm w-full justify-center">
-              Cancel auto-renew
-            </button>
-          </>
-        ) : (
-          <>
-            {billing?.subscriptionsEnabled && (
-              <button onClick={() => checkout(p.id, 'subscribe')} disabled={busy} className={primary}>
-                {busy ? 'Opening checkout…' : isCurrent ? 'Turn on auto-renew' : `${p.cta} · monthly`}
-              </button>
-            )}
-            <button onClick={() => checkout(p.id, 'once')} disabled={busy} className="btn btn-secondary w-full justify-center">
-              {busy ? 'Opening checkout…' : isCurrent ? 'Add 1 more month' : 'Pay for 1 month'}
-            </button>
-          </>
+        {canSubscribe && (
+          <button onClick={() => checkout(sel, 'subscribe')} disabled={busy} className="btn btn-primary w-full justify-center">
+            {busy ? 'Opening checkout…' : isCurrent ? 'Turn on auto-renew' : 'Get Pro'}
+          </button>
         )}
+        <button
+          onClick={() => checkout(sel, 'once')}
+          disabled={busy}
+          className={'btn w-full justify-center ' + (canSubscribe ? 'btn-secondary' : 'btn-primary')}
+        >
+          {busy ? 'Opening checkout…' : isCurrent ? `Add 1 more ${period}` : canSubscribe ? `Pay for 1 ${period}` : 'Get Pro'}
+        </button>
       </div>
     )
   }
 
   return (
     <>
-      <Topbar title="Pricing" subtitle="Choose the plan that fits how you meet" />
+      <Topbar title="Pricing" subtitle="Plans and billing" />
       <div className="p-4 sm:p-8 flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto flex flex-col gap-6">
+          <UsageCard subscribed={billing?.subscribed} />
 
-          <UsageCard />
-          {error && <div className="card p-3 text-xs text-danger border-danger">{error}</div>}
+          {success && (
+            <div role="status" className="card p-3 text-sm font-medium text-success border-success">✓ {success}</div>
+          )}
+          {error && <div role="alert" className="card p-3 text-sm text-danger border-danger">{error}</div>}
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {PLANS.map(p => (
-              <div
-                key={p.name}
-                className={'card p-5 flex flex-col ' + (p.highlight ? 'border-accent ring-1 ring-accent/20' : '')}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-sm font-bold">{p.name}</div>
-                  {p.highlight && (
-                    <span className="pill bg-accent-light text-accent">Popular</span>
-                  )}
-                </div>
-                <p className="text-xs text-muted mb-4 leading-relaxed">{p.blurb}</p>
-                <div className="mb-4">
-                  <span className="text-3xl font-extrabold">{p.price}</span>
-                  <span className="text-[11px] text-muted ml-1.5">{p.cadence}</span>
-                </div>
-                <ul className="flex flex-col gap-2 mb-5 flex-1">
-                  {p.features.map(f => (
-                    <li key={f} className="flex items-start gap-2 text-xs text-ink">
-                      <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"
-                           className="text-success flex-shrink-0 mt-0.5">
-                        <polyline points="20 6 9 17 4 12" />
-                      </svg>
-                      {f}
-                    </li>
-                  ))}
-                </ul>
-                {ONLINE_PLANS.includes(p.id) ? (
-                  renderOnlineActions(p)
-                ) : usage?.plan === p.id ? (
-                  <button disabled className="btn btn-secondary w-full justify-center">Current plan</button>
-                ) : (
-                  <Link
-                    to={`/help?issue=upgrade-request&plan=${p.id}`}
-                    className={'btn w-full justify-center ' + (p.highlight ? 'btn-primary' : 'btn-secondary')}
-                  >
-                    {p.cta}
-                  </Link>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div className="card p-5">
-            <div className="text-sm font-bold mb-2">Email sync limits</div>
-            <p className="text-xs text-muted leading-relaxed">
-              Email Intelligence fetches and analyzes a bounded window — currently 10, 15, or 30 days,
-              selectable from the Email Inbox. This keeps sync fast and avoids sending an entire mailbox
-              to the AI. Threads older than the window stay synced and searchable, but are not analyzed
-              unless you ask for a full re-analysis.
+          <div className="text-center">
+            <p className="text-xs font-semibold uppercase tracking-wide text-accent">Pricing</p>
+            <h1 className="mt-2 text-2xl sm:text-3xl font-bold text-ink">
+              Meeting notes that understand Hindi, English and Hinglish
+            </h1>
+            <p className="mx-auto mt-3 max-w-2xl text-sm text-muted">
+              Transcripts, summaries and action items for every meeting, with tasks delivered to WhatsApp and
+              email. Start free, upgrade when your team is ready.
             </p>
           </div>
 
-          <div className="card p-5 flex items-center justify-between gap-4 flex-wrap">
-            <div>
-              <div className="text-sm font-semibold">Questions about a plan?</div>
-              <p className="text-xs text-muted">We will help you pick the right one — no sales call required.</p>
-            </div>
-            <Link to="/help" className="btn btn-secondary btn-sm">Contact Support</Link>
-          </div>
-
+          <PricingPlans
+            renderAction={renderAction}
+            currentPlanId={usage?.plan}
+            currentPlanNote={usage?.planUntil ? `Valid until ${formatPlanDate(usage.planUntil)}` : undefined}
+          />
         </div>
       </div>
     </>

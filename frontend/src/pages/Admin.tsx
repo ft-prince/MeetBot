@@ -135,7 +135,7 @@ export function Admin() {
                     <tr className="text-muted text-left">
                       <th className="py-2 pr-3 font-semibold">User</th>
                       <th className="py-2 pr-3 font-semibold">Plan</th>
-                      <th className="py-2 pr-3 font-semibold">Meetings (month)</th>
+                      <th className="py-2 pr-3 font-semibold">This month (meetings · minutes)</th>
                       <th className="py-2 pr-3 font-semibold">Total</th>
                       <th className="py-2 pr-3 font-semibold">Joined</th>
                       <th className="py-2 font-semibold sr-only">Detail</th>
@@ -143,7 +143,7 @@ export function Admin() {
                   </thead>
                   <tbody>
                     {users.map(u => {
-                      const overQuota = u.meetingsLimit !== null && u.meetingsThisMonth >= u.meetingsLimit
+                      const overQuota = u.minutesLimit !== null && u.minutesThisMonth >= u.minutesLimit
                       return (
                         <tr key={u.id} className="border-t border-gray-200">
                           <td className="py-2.5 pr-3">
@@ -164,7 +164,7 @@ export function Admin() {
                             </select>
                           </td>
                           <td className={'py-2.5 pr-3 ' + (overQuota ? 'text-danger font-semibold' : '')}>
-                            {u.meetingsThisMonth}{u.meetingsLimit === null ? '' : ` / ${u.meetingsLimit}`}
+                            {u.meetingsThisMonth} · {u.minutesThisMonth}{u.minutesLimit === null ? '' : ` / ${u.minutesLimit}`} min
                           </td>
                           <td className="py-2.5 pr-3">{u.meetingsTotal}</td>
                           <td className="py-2.5 pr-3 text-muted">

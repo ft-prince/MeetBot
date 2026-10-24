@@ -27,7 +27,7 @@ async function main() {
   let orderId: string;
   if (cookie) {
     const r = await fetch(`${base}/api/billing/order`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ plan: 'pro' }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ plan: 'pro', cycle: 'monthly', region: 'in' }),
     });
     const j: any = await r.json();
     if (!r.ok) throw new Error(`order: ${r.status} ${JSON.stringify(j)}`);

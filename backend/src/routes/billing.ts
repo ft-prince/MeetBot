@@ -2,17 +2,17 @@ import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import { db } from '../db/client';
 import { config } from '../config';
-import { PlanId } from '../services/planService';
+import { CYCLE_DAYS, Cycle, PlanId, Region, chargeAmount, isCycle, isRegion } from '../services/planService';
 
 /**
  * Razorpay billing. Two ways to pay for Pro:
  *
- *   One-time (30 days, no auto-renew)
- *     POST /api/billing/order         { plan }  → Razorpay order
+ *   One-time (30 or 365 days, no auto-renew)
+ *     POST /api/billing/order         { plan, cycle, region }  → Razorpay order
  *     POST /api/billing/verify        { razorpay_order_id, razorpay_payment_id, razorpay_signature }
  *
- *   Subscription (auto-renews monthly, needs RAZORPAY_PRO_PLAN_ID from the dashboard)
- *     POST /api/billing/subscription  { plan }  → Razorpay subscription
+ *   Subscription (auto-renews, needs RAZORPAY_PLAN_<REGION>_<CYCLE> from the dashboard)
+ *     POST /api/billing/subscription  { plan, cycle, region }  → Razorpay subscription
  *     POST /api/billing/verify        { razorpay_subscription_id, razorpay_payment_id, razorpay_signature }
  *     POST /api/billing/cancel        → stops renewal at the end of the paid cycle
  *
@@ -24,13 +24,21 @@ import { PlanId } from '../services/planService';
  */
 const router = Router();
 const RAZORPAY_API = 'https://api.razorpay.com/v1';
-const PLAN_DAYS = 30;
 const CURRENCY = 'INR';
-const SUBSCRIPTION_CYCLES = 120; // Razorpay requires a cap; 10 years of months.
+// Razorpay requires a cap on billing cycles: 10 years either way.
+const SUBSCRIPTION_CYCLES: Record<Cycle, number> = { monthly: 120, annual: 10 };
 
-/** Plans a user can buy themselves. Business stays "talk to us". */
-function priceFor(plan: unknown): number | null {
-  return plan === 'pro' ? config.razorpay.proAmountPaise : null;
+/** Plans a user can buy themselves. Enterprise stays "talk to sales". */
+function isBuyable(plan: unknown): plan is 'pro' {
+  return plan === 'pro';
+}
+
+interface Purchase { plan: 'pro'; cycle: Cycle; region: Region }
+
+/** Validate { plan, cycle, region } from a request body. */
+function parsePurchase(body: any): Purchase | null {
+  const { plan, cycle, region } = body ?? {};
+  return isBuyable(plan) && isCycle(cycle) && isRegion(region) ? { plan, cycle, region } : null;
 }
 
 function hmacHex(data: string | Buffer, secret: string): string {
@@ -73,6 +81,7 @@ async function razorpay(path: string, init?: { method: string; body?: unknown })
 interface PaymentRecord {
   userId: string;
   plan: PlanId;
+  cycle: Cycle;
   sourceId: string; // order_… or sub_…
   paymentId: string;
   amount: number;
@@ -99,7 +108,7 @@ async function applyPayment(p: PaymentRecord): Promise<{ plan: string; plan_unti
                              + make_interval(days => $2) END,
            updated_at = now()
          WHERE id = $3 RETURNING plan, plan_until`,
-        [p.plan, PLAN_DAYS, p.userId],
+        [p.plan, CYCLE_DAYS[p.cycle], p.userId],
       );
     await client.query('COMMIT');
     return rows[0];
@@ -112,11 +121,13 @@ async function applyPayment(p: PaymentRecord): Promise<{ plan: string; plan_unti
 }
 
 /** Notes we attached when creating the order/subscription; the only trusted source of user + plan. */
-function trustedNotes(entity: any): { userId: string; plan: PlanId } | null {
+function trustedNotes(entity: any): { userId: string; plan: PlanId; cycle: Cycle } | null {
   const userId = entity?.notes?.userId;
   const plan = entity?.notes?.plan;
-  if (typeof userId !== 'string' || priceFor(plan) === null) return null;
-  return { userId, plan };
+  if (typeof userId !== 'string' || !isBuyable(plan)) return null;
+  // Orders created before cycles existed were monthly.
+  const cycle: Cycle = isCycle(entity?.notes?.cycle) ? entity.notes.cycle : 'monthly';
+  return { userId, plan, cycle };
 }
 
 // ── Webhook (no session; authenticated by signature) ─────────────────────────
@@ -170,25 +181,54 @@ router.use((req: Request, res: Response, next) => {
   next();
 });
 
-// GET /api/billing/status — whether the user has an auto-renewing subscription
+// GET /api/billing/status — auto-renew state + which subscriptions are offered
 router.get('/status', async (req: Request, res: Response) => {
   try {
     const { rows } = await db.query('SELECT razorpay_subscription_id FROM users WHERE id = $1', [req.session.userId]);
-    res.json({ subscribed: !!rows[0]?.razorpay_subscription_id, subscriptionsEnabled: !!config.razorpay.proPlanId });
+    const ids = config.razorpay.planIds;
+    res.json({
+      subscribed: !!rows[0]?.razorpay_subscription_id,
+      gstPercent: config.razorpay.gstPercent,
+      subscriptionsEnabled: {
+        in: { monthly: !!ids.in.monthly, annual: !!ids.in.annual },
+        intl: { monthly: !!ids.intl.monthly, annual: !!ids.intl.annual },
+      },
+    });
   } catch (err) {
     console.error('[billing] status error:', err);
     res.status(500).json({ error: 'Could not load billing status' });
   }
 });
 
-// POST /api/billing/order — one-time checkout for `plan`
+// GET /api/billing/payments — this user's payment history, newest first
+router.get('/payments', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT id, plan, amount, currency, created_at, order_id LIKE 'sub_%' AS is_subscription
+         FROM payments WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
+      [req.session.userId],
+    );
+    res.json({
+      payments: rows.map(r => ({
+        id: r.id, plan: r.plan, amount: r.amount, currency: r.currency,
+        createdAt: r.created_at, isSubscription: r.is_subscription,
+      })),
+    });
+  } catch (err) {
+    console.error('[billing] payments error:', err);
+    res.status(500).json({ error: 'Could not load payment history' });
+  }
+});
+
+// POST /api/billing/order — one-time checkout for { plan, cycle, region }
 router.post('/order', async (req: Request, res: Response) => {
-  const plan = req.body?.plan;
-  const amount = priceFor(plan);
-  if (amount === null) {
-    res.status(400).json({ error: 'This plan cannot be purchased online' });
+  const purchase = parsePurchase(req.body);
+  if (!purchase) {
+    res.status(400).json({ error: 'Choose Pro with a monthly or annual cycle and a region' });
     return;
   }
+  const { plan, cycle, region } = purchase;
+  const amount = chargeAmount(region, cycle, config.razorpay.gstPercent);
   try {
     const order = await razorpay('/orders', {
       method: 'POST',
@@ -196,35 +236,37 @@ router.post('/order', async (req: Request, res: Response) => {
         amount,
         currency: CURRENCY,
         receipt: `u_${req.session.userId!.slice(0, 8)}_${Date.now()}`,
-        notes: { userId: req.session.userId, plan },
+        notes: { userId: req.session.userId, plan, cycle, region },
       },
     });
-    res.json({ orderId: order.id, amount: order.amount, currency: order.currency, keyId: config.razorpay.keyId, plan });
+    res.json({ orderId: order.id, amount: order.amount, currency: order.currency, keyId: config.razorpay.keyId, plan, cycle });
   } catch (err) {
     console.error('[billing] create order error:', err);
     res.status(502).json({ error: 'Could not start payment. Please try again.' });
   }
 });
 
-// POST /api/billing/subscription — auto-renewing checkout for `plan`
+// POST /api/billing/subscription — auto-renewing checkout for { plan, cycle, region }
 router.post('/subscription', async (req: Request, res: Response) => {
-  const plan = req.body?.plan;
-  if (priceFor(plan) === null) {
-    res.status(400).json({ error: 'This plan cannot be purchased online' });
+  const purchase = parsePurchase(req.body);
+  if (!purchase) {
+    res.status(400).json({ error: 'Choose Pro with a monthly or annual cycle and a region' });
     return;
   }
-  if (!config.razorpay.proPlanId) {
-    res.status(503).json({ error: 'Subscriptions are not configured' });
+  const { plan, cycle, region } = purchase;
+  const planId = config.razorpay.planIds[region][cycle];
+  if (!planId) {
+    res.status(503).json({ error: 'Auto-renew is not available for this option yet' });
     return;
   }
   try {
     const sub = await razorpay('/subscriptions', {
       method: 'POST',
       body: {
-        plan_id: config.razorpay.proPlanId,
-        total_count: SUBSCRIPTION_CYCLES,
+        plan_id: planId,
+        total_count: SUBSCRIPTION_CYCLES[cycle],
         customer_notify: 1,
-        notes: { userId: req.session.userId, plan },
+        notes: { userId: req.session.userId, plan, cycle, region },
       },
     });
     res.json({ subscriptionId: sub.id, keyId: config.razorpay.keyId, plan });

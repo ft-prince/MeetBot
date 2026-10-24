@@ -111,7 +111,7 @@ export const FEATURES: Feature[] = [
     solution:
       'Sync a bounded recent window of your Gmail and the app can tell you what a meeting is likely about before it starts, and surface the threads still waiting on a reply once it ends.',
     points: [
-      'Sync window: up to 10 days on Basic, up to 30 days on Pro and Business',
+      'Sync window: up to 10 days on Free, up to 30 days on Pro and Enterprise',
       'Pre-meeting context attached to calendar events',
       'Open threads and follow-ups surfaced in one place',
       'Covered by Google API Limited Use — never used for advertising or model training',
@@ -177,7 +177,7 @@ export const FEATURES: Feature[] = [
     icon: 'video',
     name: 'Meet, Zoom, and Teams',
     tagline: 'One bot, the three places your meetings actually happen.',
-    plan: 'Meet on Basic · Zoom and Teams on Pro',
+    plan: 'Meet on Free · Zoom and Teams on Pro',
     problem:
       'Half your calls are on someone else\'s platform, and a notetaker that only covers one of them covers none of the important ones.',
     solution:
@@ -342,7 +342,7 @@ export const INTEGRATIONS: Integration[] = [
       { title: 'Summary arrives', body: 'Summary, decisions, and action items within minutes of the call ending.' },
     ],
     notes: [
-      'Included on the free Basic plan',
+      'Included on the Free plan',
       'Somebody still has to admit the bot where a lobby is enabled',
       'The bot is never hidden from the attendee list',
     ],
@@ -429,7 +429,7 @@ export const INTEGRATIONS: Integration[] = [
       'With your permission, a recent window of your Gmail is synced so the app can show what a meeting is likely about before it starts and which threads are still waiting on somebody afterwards. The window is capped by your plan and never read beyond it.',
     steps: [
       { title: 'Grant Gmail access', body: 'Entirely optional — the rest of the product works without it.' },
-      { title: 'A recent window syncs', body: 'Up to 10 days on Basic, up to 30 days on Pro and Business.' },
+      { title: 'A recent window syncs', body: 'Up to 10 days on Free, up to 30 days on Pro and Enterprise.' },
       { title: 'Context attaches', body: 'Related threads are matched to upcoming calendar events.' },
       { title: 'Follow-ups surface', body: 'Threads waiting on a reply are collected in one view.' },
     ],
@@ -483,7 +483,7 @@ export const FAQS: FaqItem[] = [
   {
     category: 'Integrations',
     q: 'Do I have to give access to my email?',
-    a: 'No. Email intelligence is optional and the rest of the product works without it. If you do enable it, only a bounded recent window is synced — up to 10 days on Basic and up to 30 days on Pro and Business.',
+    a: 'No. Email intelligence is optional and the rest of the product works without it. If you do enable it, only a bounded recent window is synced — up to 10 days on Free and up to 30 days on Pro and Enterprise.',
   },
   {
     category: 'Integrations',
@@ -492,18 +492,18 @@ export const FAQS: FaqItem[] = [
   },
   {
     category: 'Pricing',
-    q: 'What happens if I hit my plan limit?',
-    a: 'The bot stops joining new meetings for the rest of the calendar month; everything already captured stays untouched. Limits reset on the 1st, and you can request an upgrade from inside the app.',
+    q: 'What happens if I use up my free minutes?',
+    a: 'The bot stops joining new meetings for the rest of the calendar month; everything already captured stays untouched. Free minutes reset on the 1st, and you can upgrade to Pro from inside the app at any time.',
   },
   {
     category: 'Pricing',
     q: 'How do I upgrade?',
-    a: 'Sign in and send an upgrade request from the app — plans are activated by our team. There is no checkout to complete yet.',
+    a: 'Sign in, open Pricing and choose Pro. Pay by UPI or card through Razorpay; Pro is active the moment the payment goes through.',
   },
   {
     category: 'Pricing',
     q: 'How do I sign up?',
-    a: 'With your Google account. There is no separate password to create; sign in and the Basic plan is active immediately.',
+    a: 'With your Google account. There is no separate password to create; sign in and the Free plan is active immediately.',
   },
   {
     category: 'Privacy',

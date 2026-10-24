@@ -98,7 +98,7 @@ export function UserDetailPanel({ userId, onClose, onSaved }: UserDetailPanelPro
 
             <div className="grid grid-cols-3 gap-2">
               <Metric label="Meetings" value={c.meetingsTotal} />
-              <Metric label="This month" value={`${c.meetingsThisMonth}${u.meetingsLimit === null ? '' : ` / ${u.meetingsLimit}`}`} />
+              <Metric label="Minutes this month" value={`${c.minutesThisMonth}${u.minutesLimit === null ? '' : ` / ${u.minutesLimit}`}`} />
               <Metric label="Recorded" value={fmtDuration(c.totalDurationMs)} />
               <Metric label="Email threads" value={c.emailThreads} />
               <Metric label="Action items" value={c.emailActionItems} />
@@ -127,7 +127,7 @@ export function UserDetailPanel({ userId, onClose, onSaved }: UserDetailPanelPro
                   {saving ? 'Saving…' : savedAt ? '✓ Saved' : 'Save plan'}
                 </button>
                 <p className="text-[11px] text-muted">
-                  Limits in force: {u.meetingsLimit === null ? 'unlimited meetings' : `${u.meetingsLimit} meetings/month`},
+                  Limits in force: {u.minutesLimit === null ? 'unlimited meetings' : `${u.minutesLimit} meeting minutes/month`},
                   {' '}email sync up to {u.emailSyncDays} days.
                 </p>
               </div>

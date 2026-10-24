@@ -86,7 +86,7 @@ router.post('/', async (req: Request, res: Response) => {
         text: [
           `Issue Type: ${issueLabel}`,
           `User:       ${userName} <${userEmail}>`,
-          `Plan:       ${usage.planName} (${usage.meetingsUsed}${usage.meetingsLimit === null ? '' : `/${usage.meetingsLimit}`} meetings this month)`,
+          `Plan:       ${usage.planName} (${usage.minutesUsed}${usage.minutesLimit === null ? '' : `/${usage.minutesLimit}`} meeting minutes this month)`,
           `User ID:    ${userId}`,
           `Submitted:  ${submittedAt}`,
           '',
@@ -98,7 +98,7 @@ router.post('/', async (req: Request, res: Response) => {
             <tr><td style="padding:4px 8px 4px 0"><strong>Issue type:</strong></td><td>${issueLabel}</td></tr>
             <tr><td style="padding:4px 8px 4px 0"><strong>Name:</strong></td><td>${userName}</td></tr>
             <tr><td style="padding:4px 8px 4px 0"><strong>Email:</strong></td><td><a href="mailto:${userEmail}">${userEmail}</a></td></tr>
-            <tr><td style="padding:4px 8px 4px 0"><strong>Plan:</strong></td><td>${usage.planName} — ${usage.meetingsUsed}${usage.meetingsLimit === null ? '' : `/${usage.meetingsLimit}`} meetings this month</td></tr>
+            <tr><td style="padding:4px 8px 4px 0"><strong>Plan:</strong></td><td>${usage.planName} — ${usage.minutesUsed}${usage.minutesLimit === null ? '' : `/${usage.minutesLimit}`} meeting minutes this month</td></tr>
             <tr><td style="padding:4px 8px 4px 0"><strong>User ID:</strong></td><td style="font-family:monospace;font-size:12px">${userId}</td></tr>
             <tr><td style="padding:4px 8px 4px 0"><strong>Submitted:</strong></td><td>${submittedAt}</td></tr>
           </table>

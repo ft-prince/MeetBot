@@ -3,9 +3,11 @@ export type PlanId = 'free' | 'pro' | 'business'
 export interface Usage {
   plan: PlanId
   planName: string
-  meetingsUsed: number
+  /** When the paid plan ends; null = free, or paid with no expiry. */
+  planUntil: string | null
+  minutesUsed: number
   /** null = unlimited */
-  meetingsLimit: number | null
+  minutesLimit: number | null
   emailSyncDays: number
   resetsAt: string
 }
@@ -57,12 +59,13 @@ export interface AdminUserDetail {
     createdAt: string
     autoJoinMinutes: number
     effectivePlan: PlanId
-    meetingsLimit: number | null
+    minutesLimit: number | null
     emailSyncDays: number
   }
   counts: {
     meetingsTotal: number
     meetingsThisMonth: number
+    minutesThisMonth: number
     totalDurationMs: number
     lastMeetingAt: string | null
     emailThreads: number
@@ -91,7 +94,8 @@ export interface AdminUser {
   createdAt: string
   meetingsThisMonth: number
   meetingsTotal: number
-  meetingsLimit: number | null
+  minutesThisMonth: number
+  minutesLimit: number | null
 }
 
 export interface MeetingRow {

@@ -124,7 +124,7 @@ export function Landing() {
               <SecondaryCta to="/features" label="See how it works" />
             </div>
             <p className="mt-5 text-[13px] text-slate-500">
-              Free plan: 5 recorded meetings a month. No card, no trial countdown.
+              Free plan: 120 meeting minutes a month. No card, no trial countdown.
             </p>
           </div>
 
@@ -407,7 +407,7 @@ export function Landing() {
         id="plans"
         label="Plans"
         title="Limits enforced by the service, not by trust"
-        sub="Start on Basic with your Google account. Upgrade from inside the app when you outgrow it."
+        sub="Start free with your Google account. Upgrade to Pro from inside the app when you need more."
       >
         <div className="-mx-5 overflow-x-auto px-5 sm:mx-0 sm:px-0">
           <table className="w-full min-w-[560px] border-collapse text-sm">

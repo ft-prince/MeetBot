@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/client';
-import { PLANS, effectivePlan, isPlanId } from '../services/planService';
+import { MINUTES_THIS_MONTH_SQL, PLANS, effectivePlan, isPlanId } from '../services/planService';
 
 const router = Router();
 
@@ -110,6 +110,8 @@ router.get('/users/:id', async (req: Request, res: Response) => {
            (SELECT count(*)::int FROM meetings WHERE user_id = $1)                    AS meetings_total,
            (SELECT count(*)::int FROM meetings
              WHERE user_id = $1 AND started_at >= date_trunc('month', now()))         AS meetings_this_month,
+           (SELECT floor(${MINUTES_THIS_MONTH_SQL})::int FROM meetings
+             WHERE user_id = $1 AND started_at >= date_trunc('month', now()))         AS minutes_this_month,
            (SELECT COALESCE(sum(duration_ms), 0)::bigint FROM meetings WHERE user_id = $1) AS total_duration_ms,
            (SELECT max(started_at) FROM meetings WHERE user_id = $1)                  AS last_meeting_at,
            (SELECT count(*)::int FROM email_threads WHERE user_id = $1)               AS email_threads,
@@ -140,12 +142,13 @@ router.get('/users/:id', async (req: Request, res: Response) => {
         createdAt: u.created_at,
         autoJoinMinutes: u.auto_join_minutes,
         effectivePlan: plan.id,
-        meetingsLimit: plan.meetingsPerMonth,
+        minutesLimit: plan.minutesPerMonth,
         emailSyncDays: plan.emailSyncDays,
       },
       counts: {
         meetingsTotal: c.meetings_total,
         meetingsThisMonth: c.meetings_this_month,
+        minutesThisMonth: c.minutes_this_month,
         totalDurationMs: Number(c.total_duration_ms),
         lastMeetingAt: c.last_meeting_at,
         emailThreads: c.email_threads,
@@ -177,6 +180,8 @@ router.get('/users', async (req: Request, res: Response) => {
       `SELECT u.id, u.email, u.name, u.picture, u.plan, u.plan_until, u.is_admin, u.created_at,
               (SELECT count(*)::int FROM meetings m
                 WHERE m.user_id = u.id AND m.started_at >= date_trunc('month', now())) AS meetings_this_month,
+              (SELECT floor(${MINUTES_THIS_MONTH_SQL})::int FROM meetings m
+                WHERE m.user_id = u.id AND m.started_at >= date_trunc('month', now())) AS minutes_this_month,
               (SELECT count(*)::int FROM meetings m WHERE m.user_id = u.id) AS meetings_total
          FROM users u
         WHERE $1 = '' OR u.email ILIKE '%' || $1 || '%' OR u.name ILIKE '%' || $1 || '%'
@@ -198,7 +203,8 @@ router.get('/users', async (req: Request, res: Response) => {
           createdAt: r.created_at,
           meetingsThisMonth: r.meetings_this_month,
           meetingsTotal: r.meetings_total,
-          meetingsLimit: (isPlanId(plan) ? PLANS[plan] : PLANS.free).meetingsPerMonth,
+          minutesThisMonth: r.minutes_this_month,
+          minutesLimit: (isPlanId(plan) ? PLANS[plan] : PLANS.free).minutesPerMonth,
         };
       }),
     });

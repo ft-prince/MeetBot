@@ -608,7 +608,7 @@ export function CtaBand({ title, sub }: { title: string; sub: string }) {
                 See pricing
               </Link>
             </div>
-            <p className="mt-5 text-[13px] text-white/85">5 recorded meetings a month on the free plan. No card.</p>
+            <p className="mt-5 text-[13px] text-white/85">120 free meeting minutes every month. No card.</p>
           </div>
         </div>
       </Container>

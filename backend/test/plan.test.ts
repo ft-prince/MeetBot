@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  PLANS, capSyncDays, effectivePlan, isOverMeetingQuota, isPlanId, periodEnd, periodStart,
+  CYCLE_DAYS, PLANS, PRICES, capSyncDays, chargeAmount, effectivePlan, isOverMinuteQuota, isPlanId,
+  periodEnd, periodStart,
 } from '../src/services/planService';
 
 // Plan resolution decides whether a paying customer keeps their limits and
@@ -10,7 +11,7 @@ import {
 
 test('a known plan id with no expiry stays in force', () => {
   assert.equal(effectivePlan('pro', null).id, 'pro');
-  assert.equal(effectivePlan('business', null).meetingsPerMonth, null);
+  assert.equal(effectivePlan('business', null).minutesPerMonth, null);
 });
 
 test('an expired paid plan degrades to free', () => {
@@ -32,10 +33,32 @@ test('an unknown or missing plan value falls back to free, never to a paid plan'
   assert.equal(isPlanId('enterprise'), false);
 });
 
-test('quota blocks at the limit, not one meeting past it', () => {
-  assert.equal(isOverMeetingQuota(PLANS.free, PLANS.free.meetingsPerMonth! - 1), false);
-  assert.equal(isOverMeetingQuota(PLANS.free, PLANS.free.meetingsPerMonth!), true);
-  assert.equal(isOverMeetingQuota(PLANS.business, 10_000), false); // unlimited
+test('free plan is 120 minutes; quota blocks at the limit, not a minute past it', () => {
+  assert.equal(PLANS.free.minutesPerMonth, 120);
+  assert.equal(isOverMinuteQuota(PLANS.free, 119), false);
+  assert.equal(isOverMinuteQuota(PLANS.free, 120), true);
+  assert.equal(isOverMinuteQuota(PLANS.pro, 100_000), false); // unlimited (fair use)
+  assert.equal(isOverMinuteQuota(PLANS.business, 100_000), false);
+});
+
+// These amounts are what customers are actually charged — they must match the
+// pricing page: India ₹360/mo or ₹3,600/yr, outside India ₹468/mo or ₹4,680/yr.
+test('Pro list prices match the published pricing (paise, before GST)', () => {
+  assert.deepEqual(PRICES, {
+    in: { monthly: 36000, annual: 360000 },
+    intl: { monthly: 46800, annual: 468000 },
+  });
+  // Annual is ₹300 / ₹390 a month, i.e. ~17% off monthly.
+  assert.equal(PRICES.in.annual / 12, 30000);
+  assert.equal(PRICES.intl.annual / 12, 39000);
+});
+
+test('charge adds GST and rounds to the rupee; annual buys a year', () => {
+  assert.equal(chargeAmount('in', 'monthly', 18), 42500);    // 360 × 1.18 = 424.8 → ₹425
+  assert.equal(chargeAmount('in', 'annual', 18), 424800);    // ₹4,248
+  assert.equal(chargeAmount('intl', 'monthly', 0), 46800);   // no GST configured
+  assert.equal(CYCLE_DAYS.monthly, 30);
+  assert.equal(CYCLE_DAYS.annual, 365);
 });
 
 test('the sync window is clamped down by the plan but never widened', () => {
