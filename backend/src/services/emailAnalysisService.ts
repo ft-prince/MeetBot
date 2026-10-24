@@ -3,6 +3,7 @@ import { config } from '../config';
 import { db } from '../db/client';
 import { getSyncDays, getThreadEmails } from './emailService';
 import type { Email } from './emailService';
+import { followUpSkipReason } from './followUpFilter';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -37,7 +38,9 @@ interface DailyBrief {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const MODEL = 'llama-3.1-8b-instant';
+// llama-3.1-8b-instant was retired by Groq (404 model_not_found), which made
+// every thread fail. Override with GROQ_EMAIL_MODEL if this one is retired too.
+const MODEL = process.env.GROQ_EMAIL_MODEL || 'openai/gpt-oss-20b';
 const MAX_EMAIL_CHARS = 10_000;
 const DEFAULT_FOLLOW_UP_DAYS = 3;
 
@@ -107,6 +110,8 @@ async function groqJSON<T>(
       temperature: opts.temperature ?? 0.3,
       max_tokens: opts.maxTokens ?? 2500,
       response_format: { type: 'json_object' },
+      // gpt-oss spends max_tokens on reasoning first; keep it short (see aiPipelineService).
+      ...(MODEL.startsWith('openai/gpt-oss') ? { reasoning_effort: 'low' as const } : {}),
     });
     const raw = response.choices[0]?.message?.content?.trim() ?? '';
     const parsed = tryParseJSON<T>(raw);
@@ -190,13 +195,13 @@ Be precise. Do not invent information not present in the emails.`,
     nextAction: analysis.next_action ?? null,
   };
 
-  await persistAnalysis(threadId, userId, result);
+  await persistAnalysis(threadId, userId, result, lastEmail);
   return result;
 }
 
 // ─── Persist analysis to DB ─────────────────────────────────────────────────
 
-async function persistAnalysis(threadId: string, userId: string, analysis: ThreadAnalysis): Promise<void> {
+async function persistAnalysis(threadId: string, userId: string, analysis: ThreadAnalysis, lastEmail: Email): Promise<void> {
   await db.query(
     `INSERT INTO email_analysis (thread_id, summary, status, key_points, decisions, risks, follow_up_needed, follow_up_reason, suggested_reply, next_action, analyzed_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
@@ -235,14 +240,26 @@ async function persistAnalysis(threadId: string, userId: string, analysis: Threa
     );
   }
 
-  if (analysis.followUpNeeded) {
+  if (analysis.followUpNeeded && !(await skipAiFollowUp(threadId, userId, lastEmail))) {
     await db.query(
+      // One pending follow-up per thread: detectFollowUps may already have made one.
       `INSERT INTO email_follow_ups (thread_id, user_id, reason, suggested_message, status)
-       VALUES ($1, $2, $3, $4, 'pending')
-       ON CONFLICT DO NOTHING`,
+       SELECT $1, $2, $3, $4, 'pending'
+        WHERE NOT EXISTS (SELECT 1 FROM email_follow_ups WHERE thread_id = $1 AND status = 'pending')`,
       [threadId, userId, analysis.followUpReason ?? 'Follow-up recommended', analysis.suggestedReply],
     );
   }
+}
+
+/** The AI flags marketing mail as "follow up"; apply the same rules as detectFollowUps. */
+async function skipAiFollowUp(threadId: string, userId: string, lastEmail: Email): Promise<boolean> {
+  const { rows } = await db.query(
+    `SELECT et.subject, et.label_ids, u.email FROM email_threads et JOIN users u ON u.id = et.user_id
+      WHERE et.id = $1 AND et.user_id = $2`,
+    [threadId, userId],
+  );
+  if (!rows[0]) return true;
+  return followUpSkipReason({ userEmail: rows[0].email, subject: rows[0].subject ?? '', labelIds: rows[0].label_ids ?? [], lastEmail }) !== null;
 }
 
 // ─── Analysis progress tracking ─────────────────────────────────────────────
@@ -372,7 +389,8 @@ export async function analyzeUnanalyzedThreads(
 
   const final: AnalysisProgress = {
     ...progress,
-    status: 'completed',
+    // Every thread failing is an outage (e.g. a retired model), not a finished run.
+    status: total > 0 && analyzed === 0 ? 'error' : 'completed',
     processed: total,
     remaining: 0,
     percentage: 100,
@@ -391,10 +409,12 @@ export async function detectFollowUps(userId: string, daysThreshold = DEFAULT_FO
   // is not a follow-up the user wants surfaced today.
   const windowDays = await getSyncDays(userId);
   const res = await db.query(
-    `SELECT et.id, et.subject, e_last.sent_at, e_last.is_sent_by_user
+    `SELECT et.id, et.subject, et.label_ids, u.email AS user_email,
+            e_last.sent_at, e_last.is_sent_by_user, e_last.from_address, e_last.to_addresses, e_last.cc_addresses
      FROM email_threads et
+     JOIN users u ON u.id = et.user_id
      JOIN LATERAL (
-       SELECT sent_at, is_sent_by_user FROM emails
+       SELECT sent_at, is_sent_by_user, from_address, to_addresses, cc_addresses FROM emails
        WHERE thread_id = et.id ORDER BY sent_at DESC LIMIT 1
      ) e_last ON true
      WHERE et.user_id = $1
@@ -410,6 +430,18 @@ export async function detectFollowUps(userId: string, daysThreshold = DEFAULT_FO
 
   let created = 0;
   for (const row of res.rows) {
+    const skip = followUpSkipReason({
+      userEmail: row.user_email,
+      subject: row.subject ?? '',
+      labelIds: row.label_ids ?? [],
+      lastEmail: {
+        fromAddress: row.from_address,
+        toAddresses: row.to_addresses ?? [],
+        ccAddresses: row.cc_addresses ?? [],
+        isSentByUser: row.is_sent_by_user,
+      },
+    });
+    if (skip) continue;
     const daysWaiting = Math.floor((Date.now() - new Date(row.sent_at).getTime()) / (1000 * 60 * 60 * 24));
     await db.query(
       `INSERT INTO email_follow_ups (thread_id, user_id, reason, days_waiting, due_date, status)
