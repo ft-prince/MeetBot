@@ -5,3 +5,12 @@ declare module 'express-session' {
     userId?: string;
   }
 }
+
+declare global {
+  namespace Express {
+    interface Request {
+      /** Unparsed JSON body, kept for webhook signature checks. */
+      rawBody?: Buffer;
+    }
+  }
+}

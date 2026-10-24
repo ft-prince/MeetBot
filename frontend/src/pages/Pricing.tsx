@@ -1,13 +1,44 @@
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Topbar } from '../components/Topbar'
 import { useAuth } from '../context/AuthContext'
 import { UsageCard } from '../components/UsageCard'
 import type { PlanId } from '../lib/types'
 
-// ponytail: no billing provider yet — plans are real and enforced server-side
-// (backend/src/services/planService.ts), but upgrades are handled by support,
-// who set the plan from the Admin page. Swap the "Upgrade" links for a checkout
-// URL when payments go live; nothing else here changes.
+// Pro is bought via Razorpay Checkout (backend/src/routes/billing.ts); Business
+// still goes through support, who set the plan from the Admin page.
+const ONLINE_PLANS: PlanId[] = ['pro']
+
+declare global {
+  interface Window { Razorpay?: new (opts: Record<string, unknown>) => { open: () => void } }
+}
+
+function loadCheckout(): Promise<void> {
+  if (window.Razorpay) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    s.onload = () => resolve()
+    s.onerror = () => reject(new Error('Could not load Razorpay'))
+    document.body.appendChild(s)
+  })
+}
+
+async function postJson(url: string, body: unknown) {
+  const r = await fetch(url, {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(j.error || `Request failed (${r.status})`)
+  return j
+}
+
+interface BillingStatus {
+  subscribed: boolean
+  subscriptionsEnabled: boolean
+}
+
 interface Plan {
   id: PlanId
   name: string
@@ -74,8 +105,95 @@ const PLANS: Plan[] = [
 ]
 
 export function Pricing() {
-  const { user } = useAuth()
+  const { user, refresh } = useAuth()
   const usage = user?.usage
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [billing, setBilling] = useState<BillingStatus | null>(null)
+
+  const loadStatus = useCallback(() => {
+    fetch('/api/billing/status', { credentials: 'include' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(setBilling)
+      .catch(() => setBilling(null))
+  }, [])
+  useEffect(loadStatus, [loadStatus])
+
+  /** Open Razorpay Checkout for either a one-time order or a subscription. */
+  async function checkout(plan: PlanId, mode: 'once' | 'subscribe') {
+    setBusy(true)
+    setError('')
+    try {
+      await loadCheckout()
+      const start = await postJson(mode === 'once' ? '/api/billing/order' : '/api/billing/subscription', { plan })
+      new window.Razorpay!({
+        key: start.keyId,
+        ...(mode === 'once'
+          ? { order_id: start.orderId, amount: start.amount, currency: start.currency }
+          : { subscription_id: start.subscriptionId }),
+        name: 'MeetMaster',
+        description: mode === 'once' ? `${plan} plan — 1 month` : `${plan} plan — renews monthly`,
+        prefill: { email: user?.email, name: user?.name },
+        handler: async (payment: Record<string, string>) => {
+          try {
+            await postJson('/api/billing/verify', payment)
+            await refresh()
+            loadStatus()
+          } catch (e) {
+            setError((e as Error).message)
+          } finally {
+            setBusy(false)
+          }
+        },
+        modal: { ondismiss: () => setBusy(false) },
+      }).open()
+    } catch (e) {
+      setError((e as Error).message)
+      setBusy(false)
+    }
+  }
+
+  async function cancelSubscription() {
+    if (!window.confirm('Stop auto-renew? You keep Pro until the end of the period you paid for.')) return
+    setBusy(true)
+    setError('')
+    try {
+      await postJson('/api/billing/cancel', {})
+      loadStatus()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function renderOnlineActions(p: Plan) {
+    const isCurrent = usage?.plan === p.id
+    const primary = 'btn w-full justify-center ' + (p.highlight ? 'btn-primary' : 'btn-secondary')
+    return (
+      <div className="flex flex-col gap-2">
+        {billing?.subscribed && isCurrent ? (
+          <>
+            <button disabled className="btn btn-secondary w-full justify-center">Current plan · auto-renewing</button>
+            <button onClick={cancelSubscription} disabled={busy} className="btn btn-secondary btn-sm w-full justify-center">
+              Cancel auto-renew
+            </button>
+          </>
+        ) : (
+          <>
+            {billing?.subscriptionsEnabled && (
+              <button onClick={() => checkout(p.id, 'subscribe')} disabled={busy} className={primary}>
+                {busy ? 'Opening checkout…' : isCurrent ? 'Turn on auto-renew' : `${p.cta} · monthly`}
+              </button>
+            )}
+            <button onClick={() => checkout(p.id, 'once')} disabled={busy} className="btn btn-secondary w-full justify-center">
+              {busy ? 'Opening checkout…' : isCurrent ? 'Add 1 more month' : 'Pay for 1 month'}
+            </button>
+          </>
+        )}
+      </div>
+    )
+  }
 
   return (
     <>
@@ -84,6 +202,7 @@ export function Pricing() {
         <div className="max-w-5xl mx-auto flex flex-col gap-6">
 
           <UsageCard />
+          {error && <div className="card p-3 text-xs text-danger border-danger">{error}</div>}
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {PLANS.map(p => (
@@ -113,7 +232,9 @@ export function Pricing() {
                     </li>
                   ))}
                 </ul>
-                {usage?.plan === p.id ? (
+                {ONLINE_PLANS.includes(p.id) ? (
+                  renderOnlineActions(p)
+                ) : usage?.plan === p.id ? (
                   <button disabled className="btn btn-secondary w-full justify-center">Current plan</button>
                 ) : (
                   <Link

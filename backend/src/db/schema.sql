@@ -261,3 +261,19 @@ CREATE TABLE IF NOT EXISTS email_sync_state (
 -- for AI analysis. Older threads stay in the DB as searchable metadata but are
 -- not auto-analyzed — see analyzeUnanalyzedThreads().
 ALTER TABLE email_sync_state ADD COLUMN IF NOT EXISTS sync_days INTEGER DEFAULT 30;
+
+-- ── Payments (Razorpay) ──────────────────────────────────────────────────────
+-- One row per captured payment. The PK on the Razorpay payment id makes
+-- /api/billing/verify idempotent: replaying the same payment can't extend the
+-- plan twice.
+CREATE TABLE IF NOT EXISTS payments (
+  id          TEXT PRIMARY KEY,               -- razorpay_payment_id
+  order_id    TEXT NOT NULL,
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan        TEXT NOT NULL,
+  amount      INTEGER NOT NULL,               -- smallest currency unit (paise)
+  currency    TEXT NOT NULL,
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+-- Active Razorpay subscription (auto-renew). NULL = none / cancelled.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_subscription_id TEXT;

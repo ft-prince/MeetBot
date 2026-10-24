@@ -86,6 +86,19 @@ export const config = {
     language: process.env.VEXA_LANGUAGE || '',
   },
   // Support ticket email — set SUPPORT_EMAIL to enable email delivery
+  // Razorpay checkout. Use rzp_test_* keys until going live.
+  razorpay: {
+    keyId: process.env.RAZORPAY_KEY_ID || '',
+    keySecret: process.env.RAZORPAY_KEY_SECRET || '',
+    // Price of one month of Pro, in paise (₹1,499 default).
+    proAmountPaise: parseInt(process.env.RAZORPAY_PRO_AMOUNT_PAISE || '149900', 10),
+    // Monthly Pro plan created in Razorpay Dashboard → Subscriptions → Plans (plan_…).
+    // Empty = only one-time payments are offered.
+    proPlanId: process.env.RAZORPAY_PRO_PLAN_ID || '',
+    // Dashboard → Webhooks secret. Events: payment.captured, subscription.charged,
+    // subscription.cancelled, subscription.completed, subscription.halted.
+    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || '',
+  },
   supportEmail: process.env.SUPPORT_EMAIL || '',
   // Public base URL of the dashboard, used in email links (e.g. https://noteai.example.com).
   appBaseUrl: (process.env.APP_BASE_URL || 'http://localhost:5173').replace(/\/+$/, ''),

@@ -16,6 +16,7 @@ import recallWebhookRouter from './routes/recallWebhook';
 import emailRouter from './routes/email';
 import adminRouter from './routes/admin';
 import accountRouter from './routes/account';
+import billingRouter from './routes/billing';
 import { startScheduler } from './services/schedulerService';
 import { startSttSidecar } from './services/sttSidecar';
 import { verifySmtpAtStartup } from './services/notificationService';
@@ -37,7 +38,8 @@ async function main() {
 
   const app = express();
   app.use(cors({ origin: true, credentials: true }));
-  app.use(express.json());
+  // Keep the raw bytes: the Razorpay webhook signs the exact body it sent.
+  app.use(express.json({ verify: (req, _res, buf) => { (req as express.Request).rawBody = buf; } }));
 
   // ── Sessions ─────────────────────────────────────────────────────
   app.use(
@@ -72,6 +74,7 @@ async function main() {
   app.use('/api/emails', emailRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/account', accountRouter);
+  app.use('/api/billing', billingRouter);
 
   // Serve the React UI build (frontend/dist). Falls back to the legacy vanilla
   // frontend if the React build hasn't been produced yet.
