@@ -3,6 +3,7 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import { config } from '../config'
+import { fakeMediaArgs } from './fakeMedia'
 import { diag } from '../services/diag'
 import { launchPersistentContextResilient } from './browserLaunch'
 import { captureJoinDebug } from './botDebug'
@@ -21,7 +22,7 @@ export interface TeamsBotOptions {
 
 const CHROME_ARGS = [
   '--no-sandbox',
-  '--use-fake-ui-for-media-stream',
+  ...fakeMediaArgs(),   // silent mic + black camera — never the host's real devices
   '--autoplay-policy=no-user-gesture-required',
   '--disable-gpu',
   '--no-first-run',

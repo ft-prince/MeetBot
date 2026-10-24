@@ -20,7 +20,15 @@ async function main() {
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     channel: 'chrome',          // ← real Chrome, not Playwright Chromium
     headless: false,
-    args: ['--no-first-run', '--window-size=1100,750'],
+    args: [
+      '--no-first-run',
+      '--window-size=1100,750',
+      // Same as the bots: Google blocks sign-in from browsers flagged as automated.
+      '--disable-blink-features=AutomationControlled',
+      // Chrome refuses to run as root (Docker) without this.
+      ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
+    ],
+    ignoreDefaultArgs: ['--enable-automation'],
   })
 
   const page = context.pages()[0] || await context.newPage()

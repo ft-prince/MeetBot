@@ -102,6 +102,16 @@ interface Session {
   // with no live active-speaker signal, a single known participant lets us
   // attribute all speech to them (the common 1:1 case).
   knownParticipants: Set<string>;
+  // Recently emitted finals, keyed by normalized text → { at, trackId }. Used to
+  // drop the same utterance when several parallel capture paths (per-track,
+  // `wasrc-*`, `meet-mixed`) transcribe the SAME audio on different tracks.
+  recentFinals: Map<string, { at: number; trackId: string }>;
+  // Google Meet runs several synthetic taps of the SAME rendered audio
+  // (`meet-mixed` element tap + multiple `wasrc-*` Web-Audio taps). We transcribe
+  // only ONE of them at a time to stop duplicate/overlapping transcripts; this is
+  // the trackId currently elected, and when it last carried audible audio.
+  activeMixedTrack: string | null;
+  activeMixedAudibleAt: number;
 }
 
 // Map from meetingCode → session (so panel can join same session)
@@ -268,6 +278,9 @@ async function handleAudioSource(ws: WebSocket, meetingCode: string): Promise<vo
       speakerLabels: new Map(),
       speakerNames: new Map(),
       speakerVotes: new Map(),
+      recentFinals: new Map(),
+      activeMixedTrack: null,
+      activeMixedAudibleAt: 0,
       currentSpeaker: null,
       knownParticipants: new Set(),
     };
@@ -540,6 +553,9 @@ export async function createBotSession(meetingCode: string, userId?: string, tit
     speakerLabels: new Map(),
     speakerNames: new Map(),
     speakerVotes: new Map(),
+    recentFinals: new Map(),
+    activeMixedTrack: null,
+    activeMixedAudibleAt: 0,
     currentSpeaker: null,
     knownParticipants: new Set(),
   });
@@ -648,12 +664,120 @@ function voteLeader(session: Session, key: string): string | null {
   return best;
 }
 
+// Cross-track duplicate suppression. The in-page audio injector runs several
+// capture paths simultaneously (real per-participant tracks, a Web-Audio tee
+// `wasrc-*`, and the `meet-mixed` element tap). When more than one carries the
+// same audio, each track gets its own Deepgram client and the SAME speech is
+// transcribed 2–3×, producing identical duplicate transcript lines. All finals
+// converge in forwardTrackAudio, so we drop a final whose normalized text was
+// just emitted by a DIFFERENT track within the window. A genuine repeat by one
+// speaker keeps the same trackId → never dropped.
+// ponytail: exact normalized-text match only; near-duplicate ASR variants of the
+// same audio (slightly different words) still slip through — add fuzzy matching
+// if that shows up.
+const DEDUP_WINDOW_MS = 8000;
+
+export function normalizeFinalText(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.,!?।]+$/u, '');
+}
+
+type RecentFinals = Map<string, { at: number; trackId: string }>;
+
+// Exported for unit testing; takes just the recentFinals map so it has no other
+// Session coupling.
+export function isDuplicateFinal(recentFinals: RecentFinals, trackId: string, text: string, now = Date.now()): boolean {
+  const sig = normalizeFinalText(text);
+  if (!sig) return true; // empty/whitespace-only → nothing to emit
+  for (const [k, v] of recentFinals) {
+    if (now - v.at > DEDUP_WINDOW_MS) recentFinals.delete(k);
+  }
+  const prev = recentFinals.get(sig);
+  if (prev && prev.trackId !== trackId && now - prev.at <= DEDUP_WINDOW_MS) {
+    prev.at = now; // refresh so a 3rd parallel track's copy is dropped too
+    return true;
+  }
+  recentFinals.set(sig, { at: now, trackId });
+  return false;
+}
+
+function isDuplicateFinalAcrossTracks(session: Session, trackId: string, text: string): boolean {
+  return isDuplicateFinal(session.recentFinals, trackId, text);
+}
+
+// ── Google Meet mixed-tap selection ──────────────────────────────────────────
+// The Meet injector taps the SAME rendered audio several ways at once: one
+// `meet-mixed` element tap (the full output mix) plus one `wasrc-N` Web-Audio tap
+// per MediaStreamSource Meet builds. Each becomes its own Deepgram stream, so the
+// same speech is transcribed 2–3× with slightly different word boundaries —
+// producing overlapping, near-duplicate lines that text-dedup can't collapse.
+// Fix: transcribe only ONE of these synthetic taps at a time, elected purely by
+// who is actually carrying audible audio. No tap is preferred by name: on real
+// Meet `meet-mixed` is often silent for the whole call (Meet renders through Web
+// Audio, not <audio> elements), so preferring it starved transcription entirely.
+// Real per-participant tracks (ids that are neither) are untouched, so true
+// multi-track diarization still works when Meet exposes it.
+// ponytail: single elected stream, re-elected after MIXED_TAKEOVER_MS of silence.
+// Ceiling: if two different people speak over each other on different taps,
+// only the elected tap's speech is transcribed until a pause. Per-tap fuzzy
+// dedup would lift that if it matters.
+// Zoom/Teams emit their own single `*-mixed` id and are unaffected.
+const MIXED_TAKEOVER_MS = 4000;
+const AUDIBLE_RMS = 0.005;
+
+function isMeetSyntheticTap(trackId: string): boolean {
+  return trackId === 'meet-mixed' || trackId.startsWith('wasrc-');
+}
+
+function isChunkAudible(buf: Buffer): boolean {
+  const samples = Math.floor(buf.byteLength / 2);
+  if (samples === 0) return false;
+  let sum = 0, m = 0;
+  for (let i = 0; i < samples; i += 8) { const v = buf.readInt16LE(i * 2) / 32768; sum += v * v; m++; }
+  return Math.sqrt(sum / Math.max(m, 1)) >= AUDIBLE_RMS;
+}
+
+// Minimal election state shouldDropMeetTap reads/writes — exported so the
+// selection logic can be unit-tested without building a whole Session.
+export interface MeetTapState {
+  activeMixedTrack: string | null;
+  activeMixedAudibleAt: number;
+}
+
+// Returns true if this synthetic Meet tap should be ignored because another tap
+// of the same audio is already the elected stream. Mutates the session's
+// election state. Non-synthetic tracks always return false (never dropped here).
+export function shouldDropMeetTap(session: MeetTapState, trackId: string, chunk: Buffer, now = Date.now()): boolean {
+  if (!isMeetSyntheticTap(trackId)) return false;
+  const audible = isChunkAudible(chunk);
+
+  // The elected tap always passes (silence included) so its Deepgram stream
+  // sees continuous audio.
+  if (trackId === session.activeMixedTrack) {
+    if (audible) session.activeMixedAudibleAt = now;
+    return false;
+  }
+  // Another tap only matters when it is carrying sound. Silent taps never get
+  // elected (and never spin up an STT client).
+  if (!audible) return true;
+  // The elected tap is still live → this audible tap is a duplicate of it.
+  const electedIsLive = session.activeMixedTrack !== null &&
+    now - session.activeMixedAudibleAt <= MIXED_TAKEOVER_MS;
+  if (electedIsLive) return true;
+  // Nothing elected yet, or the elected tap went quiet → take over.
+  session.activeMixedTrack = trackId;
+  session.activeMixedAudibleAt = now;
+  return false;
+}
+
 // Per-participant audio: one whisper client per track
 export function forwardTrackAudio(meetingCode: string, chunk: Buffer, trackId: string): void {
   const session = sessions.get(meetingCode);
   if (!session) { diag(`forwardTrackAudio: NO SESSION for ${meetingCode} (track ${trackId.slice(0,8)})`); return; }
 
   diagAudio(trackId, chunk);
+
+  // Collapse Meet's redundant synthetic taps to a single transcription stream.
+  if (shouldDropMeetTap(session, trackId, chunk)) return;
 
   if (!session.trackWhispers.has(trackId)) {
     const w = createSttClient(
@@ -682,6 +806,13 @@ export function forwardTrackAudio(meetingCode: string, chunk: Buffer, trackId: s
         if (isPseudoParticipantName(name)) name = soleKnown;
 
         const identified = { ...segment, speakerName: name, speakerLabel: label };
+        // Drop an identical utterance already transcribed by a parallel capture
+        // path on another track (see isDuplicateFinalAcrossTracks). Only finals
+        // accumulate into lines; interims overwrite a single slot, so let them pass.
+        if (isFinal && isDuplicateFinalAcrossTracks(session, trackId, identified.text)) {
+          diag(`DEDUP ${trackId.slice(0, 8)} dropped duplicate final "${identified.text}"`);
+          return;
+        }
         if (isFinal) {
           console.log(
             `[transcript] ${trackId.slice(0, 8)} ${name ?? label}: ${identified.text}` +

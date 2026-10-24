@@ -99,7 +99,8 @@ export const config = {
     host:  process.env.SMTP_HOST  || '',
     port:  parseInt(process.env.SMTP_PORT  || '587', 10),
     user:  process.env.SMTP_USER  || '',
-    pass:  process.env.SMTP_PASS  || '',
+    // Google shows App Passwords as "abcd efgh ijkl mnop"; strip the spaces.
+    pass:  (process.env.SMTP_PASS || '').replace(/\s+/g, ''),
     from:  process.env.SMTP_FROM  || process.env.SMTP_USER || 'noreply@noteai.local',
   },
   recall: {

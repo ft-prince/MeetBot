@@ -18,6 +18,7 @@ import adminRouter from './routes/admin';
 import accountRouter from './routes/account';
 import { startScheduler } from './services/schedulerService';
 import { startSttSidecar } from './services/sttSidecar';
+import { verifySmtpAtStartup } from './services/notificationService';
 // session type augmentation — loaded via tsconfig includes
 
 const PgSession = connectPgSimple(session);
@@ -106,6 +107,7 @@ async function main() {
 
   // Start auto-join scheduler (checks every 60s for upcoming calendar meetings).
   startScheduler();
+  void verifySmtpAtStartup();
 }
 
 main().catch(err => {

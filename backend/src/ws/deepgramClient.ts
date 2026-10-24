@@ -25,6 +25,12 @@ const WATCHDOG_INTERVAL_MS = 10_000
 const AUDIBLE_RECENT_MS = 15_000
 const STALL_MS = 30_000
 const AUDIBLE_RMS = 0.005
+// Deepgram drops the first word when a stream's very first audio is speech
+// (verified: "Hello guys…" → "Guys…" with no lead-in, intact with one). Every
+// fresh connection gets this much silence before real audio. It is not counted in
+// bytesSentTotal and is subtracted from the connection offset, so segment
+// timestamps stay on the meeting timeline.
+const LEAD_IN_MS = 500
 
 export class DeepgramClient {
   private live: LiveClient | null = null
@@ -155,8 +161,11 @@ export class DeepgramClient {
       // Timestamps from this connection restart at 0; everything sent before it
       // (including the queue flushed below) offsets segment times so the meeting
       // timeline stays monotonic across reconnects.
-      this.connOffsetMs = Math.round(this.bytesSentTotal / BYTES_PER_MS)
-      console.log('[deepgram-client] Connected' + (this.connOffsetMs > 0 ? ` (resumed at +${Math.round(this.connOffsetMs / 1000)}s of audio)` : ''))
+      this.connOffsetMs = Math.round(this.bytesSentTotal / BYTES_PER_MS) - LEAD_IN_MS
+      const leadIn = new ArrayBuffer(LEAD_IN_MS * BYTES_PER_MS)  // zero-filled = silence
+      conn.send(leadIn)
+      const resumedAtMs = this.connOffsetMs + LEAD_IN_MS
+      console.log('[deepgram-client] Connected' + (resumedAtMs > 0 ? ` (resumed at +${Math.round(resumedAtMs / 1000)}s of audio)` : ''))
       // Flush any audio that arrived before the connection was ready
       const queued = this.audioQueue
       this.audioQueue = []
@@ -193,9 +202,12 @@ export class DeepgramClient {
       const dominantSpeaker = Object.entries(speakerCounts).sort((a, b) => b[1] - a[1])[0]
       const speakerNum = dominantSpeaker ? Number(dominantSpeaker[0]) : 0
 
-      const startMs = this.connOffsetMs + Math.round((data.start ?? 0) * 1000)
+      // A segment can begin inside the silent lead-in; never report it earlier
+      // than where this connection's real audio starts.
+      const realAudioStartMs = this.connOffsetMs + LEAD_IN_MS
+      const startMs = Math.max(realAudioStartMs, this.connOffsetMs + Math.round((data.start ?? 0) * 1000))
       const duration = data.duration ?? 0
-      const endMs = this.connOffsetMs + Math.round((data.start + duration) * 1000)
+      const endMs = Math.max(startMs, this.connOffsetMs + Math.round((data.start + duration) * 1000))
 
       const segment: TranscriptSegment = {
         segmentId: uuidv4(),

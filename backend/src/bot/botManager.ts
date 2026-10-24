@@ -174,6 +174,12 @@ export const botManager = {
 
     await createBotSession(meetingId, userId, title);
 
+    // Nothing is transcribed until the bot is actually admitted. Before that the
+    // page is the pre-join lobby — any audio there is the bot's own device
+    // preview, never meeting audio.
+    let isJoined = false;
+    let droppedPreJoin = 0;
+
     // Audio routing:
     //   • Google Meet: per-participant WebRTC tracks → forwardTrackAudio (one
     //     Deepgram per track, named via DOM scrape).
@@ -188,6 +194,7 @@ export const botManager = {
       displayName: 'MeetMaster Recorder',
 
       onTrackAudio: (chunk, trackId) => {
+        if (!isJoined) { droppedPreJoin++; return; }
         // Synthetic mixed-stream ids (Zoom WASM / Teams web) go through the
         // correlator path, tagged with the live DOM active speaker. Per-track
         // ids (Meet, legacy Zoom/Teams RTC) get their own transcription stream.
@@ -207,9 +214,10 @@ export const botManager = {
       },
 
       onJoined: () => {
+        isJoined = true;
         broadcastToMeeting(meetingId, { type: 'bot.joined', meetingId });
         console.log('[botManager] Bot joined', meetingId);
-        diag(`BOT JOINED ${meetingId} — audio capture should begin now`);
+        diag(`BOT JOINED ${meetingId} — audio capture begins now (ignored ${droppedPreJoin} pre-join chunk(s))`);
       },
 
       onEnded: () => {

@@ -3,6 +3,7 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import { config } from '../config'
+import { fakeMediaArgs } from './fakeMedia'
 import { launchPersistentContextResilient } from './browserLaunch'
 
 export interface ZoomBotOptions {
@@ -19,7 +20,7 @@ export interface ZoomBotOptions {
 
 const CHROME_ARGS = [
   '--no-sandbox',
-  '--use-fake-ui-for-media-stream',
+  ...fakeMediaArgs(),   // silent mic + black camera — never the host's real devices
   '--autoplay-policy=no-user-gesture-required',
   '--disable-gpu',
   '--no-first-run',

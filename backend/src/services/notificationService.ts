@@ -38,6 +38,45 @@ function getTransporter(): Transporter {
   return transporter;
 }
 
+/** Operational alert to the admin (SUPPORT_EMAIL, else the SMTP sender). */
+export async function sendAdminAlert(subject: string, text: string): Promise<boolean> {
+  const to = config.supportEmail || config.smtp.user;
+  if (!smtpConfigured() || !to) {
+    console.warn(`[notify] Alert not emailed (SMTP not configured): ${subject}`);
+    return false;
+  }
+  try {
+    await getTransporter().sendMail({ from: config.smtp.from, to, subject: `[MeetMaster] ${subject}`, text });
+    return true;
+  } catch (err) {
+    console.error(`[notify] Failed to email alert "${subject}":`, (err as Error).message);
+    return false;
+  }
+}
+
+/**
+ * Check the SMTP login once at startup so a bad/revoked password is visible in
+ * the boot log instead of surfacing only as a silently missing email later.
+ * Never throws — email is optional and must not block the server.
+ */
+export async function verifySmtpAtStartup(): Promise<void> {
+  if (!smtpConfigured()) {
+    console.warn('[smtp] Not configured (SMTP_HOST/SMTP_USER/SMTP_PASS) — meeting emails disabled');
+    return;
+  }
+  try {
+    await getTransporter().verify();
+    console.log(`[smtp] Login OK — ${config.smtp.user} via ${config.smtp.host}:${config.smtp.port}`);
+  } catch (err) {
+    const e = err as { responseCode?: number; message?: string };
+    const hint = e.responseCode === 535
+      ? ' — credentials rejected. For Gmail/Workspace use a 16-letter App Password (Google Account → Security → App passwords), not the account password.'
+      : '';
+    const reason = (e.message ?? '').replace(/\s+/g, ' ').trim();
+    console.error(`[smtp] Login FAILED for ${config.smtp.user} via ${config.smtp.host}:${config.smtp.port}: ${reason}${hint}`);
+  }
+}
+
 /** Test seam — inject a fake transporter (e.g. jsonTransport) in tests. */
 export function setTransporterForTests(t: Transporter | null): void {
   transporter = t;

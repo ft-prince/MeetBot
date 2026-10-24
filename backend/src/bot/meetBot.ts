@@ -1,8 +1,9 @@
 import { chromium, Browser, BrowserContext, Page } from 'playwright'
 import path from 'path'
-import os from 'os'
 import fs from 'fs'
 import { config } from '../config'
+import { fakeMediaArgs } from './fakeMedia'
+import { meetProfileBaseDir, resolveMeetProfile } from './sessionKeeper'
 import { diag } from '../services/diag'
 import { launchPersistentContextResilient } from './browserLaunch'
 import { captureJoinDebug } from './botDebug'
@@ -22,7 +23,7 @@ export interface BotOptions {
 // Chrome flags shared across both launch modes
 const CHROME_ARGS = [
   '--no-sandbox',
-  '--use-fake-ui-for-media-stream',
+  ...fakeMediaArgs(),   // silent mic + black camera — never the host's real devices
   '--autoplay-policy=no-user-gesture-required',
   '--disable-gpu',
   '--no-first-run',
@@ -51,8 +52,7 @@ export class MeetBot {
     // Resolve the Chrome profile directory.
     // Priority: BOT_CHROME_PROFILE_DIR env → default ~/.noteai/bot-profile
     // A configured dir that's empty (e.g. fresh Docker volume) falls through to guest mode.
-    const defaultProfile = path.join(os.homedir(), '.noteai', 'bot-profile')
-    const candidate = config.botChromeProfileDir || defaultProfile
+    const candidate = meetProfileBaseDir()
     const hasProfile = fs.existsSync(path.join(candidate, 'Default'))
     const profileDir = hasProfile ? candidate : ''
 
@@ -60,11 +60,15 @@ export class MeetBot {
       // ── Authenticated mode ──────────────────────────────────────────────
       // Uses a pre-signed-in Google session — required for org-restricted meetings.
       // Run `npx tsx bot-login.ts` once to create the profile.
-      console.log(`[bot] Using saved Chrome profile: ${profileDir}`)
+      // Pin the signed-in sub-profile explicitly; Chrome would otherwise open the
+      // "last used" one, which can be a signed-out profile in the same dir.
+      const chosen = resolveMeetProfile(profileDir)
+      console.log(`[bot] Using saved Chrome profile: ${profileDir} → "${chosen.directory}" (${chosen.email ?? 'no Chrome account recorded'})`)
+      diag(`PROFILE ${profileDir} → "${chosen.directory}" account=${chosen.email ?? 'unknown'}`)
       this.context = await launchPersistentContextResilient(profileDir, {
         channel: 'chrome',
         headless: config.botHeadless,
-        args: CHROME_ARGS,
+        args: [...CHROME_ARGS, `--profile-directory=${chosen.directory}`],
         permissions: ['microphone', 'camera'],
         ignoreDefaultArgs: ['--enable-automation'],
       }, 'bot')

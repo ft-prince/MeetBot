@@ -6,7 +6,8 @@
 import { getEventsToAutoJoin, linkMeeting } from './calendarService';
 import { getDueScheduledMeetings, markScheduledLaunched } from './scheduledMeetingService';
 import { getMeetingIdByCode, getMeetingsNeedingReminder } from './meetingService';
-import { sendMeetingReminderEmail, smtpConfigured } from './notificationService';
+import { sendAdminAlert, sendMeetingReminderEmail, smtpConfigured } from './notificationService';
+import { checkAndRefreshMeetSession } from '../bot/sessionKeeper';
 import { botManager } from '../bot/botManager';
 import { config } from '../config';
 import { db } from '../db/client';
@@ -33,7 +34,56 @@ async function tick(): Promise<void> {
     checkScheduledMeetings(),
     dailyEmailSync(),
     checkUnviewedMeetingReminders(),
+    keepBotSessionAlive(),
   ]);
+}
+
+// ── Bot Google-session keep-alive ────────────────────────────────────────────
+// Opens the Meet bot's saved profile every 12h (first run ~2 min after boot) so
+// the Google session stays in use and refreshed cookies are saved, and alerts the
+// admin if the bot has been signed out. Skipped while any bot is in a meeting
+// (they share the profile); it simply retries on a later tick.
+const SESSION_KEEPALIVE_INTERVAL_MS = 12 * 60 * 60 * 1000;
+const SESSION_FIRST_CHECK_DELAY_MS = 2 * 60 * 1000;
+const SESSION_ALERT_REPEAT_MS = 24 * 60 * 60 * 1000;
+const schedulerStartedAt = Date.now();
+let lastSessionCheck = 0;
+let lastSessionAlert = 0;
+let sessionCheckRunning = false;
+
+async function keepBotSessionAlive(): Promise<void> {
+  const now = Date.now();
+  if (sessionCheckRunning) return;
+  if (now - schedulerStartedAt < SESSION_FIRST_CHECK_DELAY_MS) return;
+  if (lastSessionCheck && now - lastSessionCheck < SESSION_KEEPALIVE_INTERVAL_MS) return;
+  if (botManager.active().length > 0) return; // profile in use by a live bot
+
+  sessionCheckRunning = true;
+  try {
+    const status = await checkAndRefreshMeetSession();
+    if (!status) return; // no profile / busy → retry next tick
+    lastSessionCheck = Date.now();
+    if (status.signedIn) {
+      console.log(`[session-keeper] Bot Google session OK — ${status.account ?? 'account'} ("${status.profile}")`);
+      lastSessionAlert = 0;
+      return;
+    }
+    console.error(`[session-keeper] Bot is LOGGED OUT of Google ("${status.profile}") — ${status.finalUrl}`);
+    if (now - lastSessionAlert >= SESSION_ALERT_REPEAT_MS) {
+      lastSessionAlert = now;
+      await sendAdminAlert(
+        'Meeting bot is signed out of Google',
+        `The MeetMaster bot's Google session has ended (profile "${status.profile}", ` +
+        `account ${status.account ?? 'unknown'}).\n\nUntil it is signed in again the bot can only join ` +
+        `meetings that allow guests. Re-run the bot login (bot-login.ts / bot-login-docker.sh over VNC).\n\n` +
+        `Checked at ${status.checkedAt}. Final URL: ${status.finalUrl}`,
+      );
+    }
+  } catch (err) {
+    console.error('[session-keeper] check failed:', (err as Error).message);
+  } finally {
+    sessionCheckRunning = false;
+  }
 }
 
 // ── Unread-meeting reminders ─────────────────────────────────────────────────
