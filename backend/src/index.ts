@@ -67,6 +67,10 @@ async function main() {
   // through to the SPA catch-all.
   app.get('/accounts/google/login/callback', handleGoogleCallback);
   app.get('/accounts/google/login/callback/', handleGoogleCallback);
+  // Billing MUST come before apiRouter: apiRouter is mounted on all of /api and
+  // rejects anything without a session (401), which would swallow Razorpay's
+  // unauthenticated /api/billing/webhook calls.
+  app.use('/api/billing', billingRouter);
   app.use('/api', apiRouter);
   app.use('/api/calendar', calendarRouter);
   app.use('/api/support', supportRouter);
@@ -74,7 +78,6 @@ async function main() {
   app.use('/api/emails', emailRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/account', accountRouter);
-  app.use('/api/billing', billingRouter);
 
   // Serve the React UI build (frontend/dist). Falls back to the legacy vanilla
   // frontend if the React build hasn't been produced yet.
