@@ -199,7 +199,8 @@ export function Privacy() {
         </p>
         <p>
           <strong className="font-medium text-ink">AI summarisation</strong> — transcripts and email text are sent
-          to a large-language-model provider to produce summaries and action items.
+          to a large-language-model API provider (currently Groq) only to produce summaries and action
+          items for you; the provider does not use this data to train its models.
         </p>
         <p>
           <strong className="font-medium text-ink">Infrastructure and email delivery</strong> — hosting, database,
@@ -208,6 +209,16 @@ export function Privacy() {
         <p>
           We also disclose data where legally required. We do not sell personal data or share it with
           advertisers.
+        </p>
+      </Section>
+
+      <Section heading="How we protect it">
+        <p>
+          All traffic to MeetMaster is encrypted in transit with HTTPS (TLS). Google OAuth tokens,
+          calendar events, and synced email data are stored only on our servers, in a database that is
+          not reachable from the internet; they are never exposed to the browser or to other users.
+          Access to production systems is limited to authorised staff, protected by SSH keys, and used
+          only to operate and secure the service. Each user can only see their own data.
         </p>
       </Section>
 

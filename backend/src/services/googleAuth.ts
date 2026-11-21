@@ -33,7 +33,7 @@ export function getAuthUrl(state: string): string {
       'openid',
       'email',
       'profile',
-      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/calendar.events.readonly', // ponytail: narrowest scope that covers events.list
       'https://www.googleapis.com/auth/gmail.readonly',
     ],
     state,
